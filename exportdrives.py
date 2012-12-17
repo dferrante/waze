@@ -37,7 +37,7 @@ def export(username, password):
         gmlfile = '%s.gml' % filename
         gfsfile = '%s.gfs' % filename
         kmlfile = '%s.kml' % filename
-        if not os.path.exists(gmlfile):
+        if not os.path.exists(gmlfile) and not os.path.exists(kmlfile):
             data = requests.get(sessiondata_url, params={'id': session['id']}, cookies=authdict)
             try:
                 gml = data.json['archiveSessions']['objects'][0]['data']

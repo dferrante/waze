@@ -43,7 +43,8 @@ def export(username, password):
                 gml = data.json['archiveSessions']['objects'][0]['data']
             except Exception, e:
                 if 'code' in data.json and data.json['code'] == 101:
-                    print 'error:', data.json['details']
+                    print 'the rest are invalid, quitting'
+                    sys.exit()
                 else:
                     print 'error:', data.url, data.content
                 continue

@@ -5,12 +5,18 @@ outfile = 'drives.kml'
 
 def colorspeed(speed):
     alpha = 200
-    if speed < 30:
-        argb = (alpha,200*(1-speed/30.0)+55,200*(1-speed/30.0)+55,200*(speed/30.0)+55)
-    elif speed >= 30 and speed < 65:
-        argb = (alpha,200*(1-(speed-30)/45.0)+55,200*((speed-30)/45.0)+55,200*(1-(speed-30)/45.0)+55)
-    else:
-        argb = (alpha,200*((speed-65)/20.0)+55,200*(1-(speed-65)/30.0)+55,200*(1-(speed-65)/20.0)+55)
+    speed = speed-10
+    maxspeed = 90.0
+    midpoint = maxspeed/2.0
+    limiter = lambda x: 255 if x > 255 else 0 if x < 0 else int(x)
+
+    argb = (
+        alpha,
+        0 if speed <= midpoint else 255*((speed-midpoint)/midpoint),
+        255*(speed/midpoint) if speed <= midpoint else 255*(1-((speed-midpoint)/midpoint)),
+        255*(1-(speed/midpoint)) if speed <= midpoint else 0,
+    )
+    argb = tuple(map(limiter, argb))
     color = '%02x%02x%02x%02x' % argb
     return color
 
@@ -42,6 +48,9 @@ def run():
             elif startdate.hour >= 17 and startdate.hour <= 19:
                 subfolder = eveningfolder
 
+        if distance == 0:
+            continue
+
         folder = subfolder.newfolder(name='%s %s' % (startdate.strftime('%m/%d/%y %H:%M'), distance))
         kmldata = make_instance(open(kmlfile).read())
         try:
@@ -61,6 +70,9 @@ def run():
             length = int(int(data['length'])*0.000621371)
             speed = int(int(data['speed'])*0.621371)
             coords = [tuple(x.split(',')) for x in l.LineString.coordinates.PCDATA.split()]
+
+            if speed > 120:
+                continue
 
             lin = folder.newlinestring(coords=coords, name='%s - %smi - %smph' % (name, length, speed))
             lin.style.linestyle.width = 8

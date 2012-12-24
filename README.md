@@ -1,10 +1,27 @@
-this script will export the last month or so of drives directly from waze's servers.
+Installation Requirements
+=========================
 
-it needs the following installed already:
-python-requests
-ogr2ogr (in the gdal-bin package in ubuntu)
+pip install simplekml requests Gnosis-Utils numpy
+sudo apt-get install gdal-bin
 
-put the script where you want to keep your kml files.  the files coming from waze are GML formatted and my script deletes them but thats easy enough to change.  
-once you run the script, if you keep those files in the directory, it will skip grabbing and converting them the next time around.  the GML is converted to KML via ogr2ogr, but if you want some other format that ogr2ogr supports, its easy enough to change (the -f arg).
+Running
+=======
+python exportdrives.py
+
+Notes
+=====
+this script will export the last month or so of drives directly from waze's servers.  waze only keeps about a month available,
+so you'll have to keep running the script at least once a month to be able to get all your drives.  if you just keep all the files in the same
+directory, the script will skip drives you've already downloaded.
+
+in the top of the file is:
+    kmlfolderrules = [
+        ('morning', lambda x: x['startdate'].weekday() < 5 and x['startdate'].hour >= 8 and x['startdate'].hour <= 10),
+        ('evening', lambda x: x['startdate'].weekday() < 5 and x['startdate'].hour >= 17 and x['startdate'].hour <= 19),
+        ('other', lambda x: True),
+    ]
+
+you can edit these lambdas to have your commute times be represented and organized in the KML.  the code above will have a 'morning'
+folder for starttimes on M-F between 8AM and 10:59AM, and 'evening' for M-F between 5PM and 7:59PM
 
 enjoy!

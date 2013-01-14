@@ -121,6 +121,28 @@ def parsekmlname(name):
             self['type'] = folder
             return self
 
+def commutesplitbucket(folder, buckets, drivebuckets):
+    averages = {}
+    for fn in commutes:
+        averages[fn] = folder.newfolder(name=fn, visibility=0)
+        for bucket in sorted(list(set([x[3] for x in buckets.keys() if x[2] == fn]))):
+            drivecount = len(drivebuckets[(bucket, fn)])
+            avglength = round(numpy.mean([x[0] for x in drivebuckets[(bucket, fn)]]), 1)
+            avgspeed = round(numpy.mean([x[1] for x in drivebuckets[(bucket, fn)]]), 1)
+            foldername = '%s (%s drives/%smi/%smph)' % (bucket, drivecount, avglength, avgspeed)
+            averages[fn+bucket] = averages[fn].newfolder(name=foldername, visibility=0)
+            averages[fn+bucket+'-speed'] = averages[fn+bucket].newfolder(name='speed points', visibility=0)
+
+    for k,v in buckets.iteritems():
+        prevlinename, name, drivetype, bucket = k
+        if drivetype not in commutes:
+            continue
+        avgspeed = numpy.mean([speed for speed, coords, length in v])
+        length = numpy.mean([length for speed, coords, length in v])
+        coords = sorted([x[1] for x in v], key=lambda x: len(x))[-1] #pick one with most coords
+        makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], name, coords, avgspeed, length)
+
+
 def makespeedline(folder, spfolder, name, coords, speed, length):
     line = folder.newlinestring(coords=coords, name='%s - %smi - %smph' % (name, length, int(speed)))
     line.style.linestyle.width = 6
@@ -150,6 +172,8 @@ def colorize():
     driveweekbuckets = collections.defaultdict(list)
     monthbuckets = collections.defaultdict(list)
     drivemonthbuckets = collections.defaultdict(list)
+    weekdaybuckets = collections.defaultdict(list)
+    driveweekdaybuckets = collections.defaultdict(list)
     for kmlfile in kmlfiles:
         if kmlfile['distance'] < 1:
             continue
@@ -164,6 +188,7 @@ def colorize():
 
         prevlinename = 'start'
         weekbucketname = kmlfile['startdate'].strftime('%Y-%W')
+        weekdaybucketname = kmlfile['startdate'].strftime('%A')
         monthbucketname = kmlfile['startdate'].strftime('%Y-%m')
         timebucketname = '%s:%02d%s' % (int(kmlfile['startdate'].strftime('%I')),
                                         math.floor(kmlfile['startdate'].minute/60.0*(60/timeslices))*timeslices,
@@ -193,11 +218,13 @@ def colorize():
             linedata[(prevlinename, name, 'all')].append((speed, coords, length))
             timebuckets[(prevlinename, name, kmlfile['type'], timebucketname)].append((speed, coords, length))
             weekbuckets[(prevlinename, name, kmlfile['type'], weekbucketname)].append((speed, coords, length))
+            weekdaybuckets[(prevlinename, name, kmlfile['type'], weekdaybucketname)].append((speed, coords, length))
             monthbuckets[(prevlinename, name, kmlfile['type'], monthbucketname)].append((speed, coords, length))
             prevlinename = name
         drivedata[kmlfile['type']].append(kmlfile)
         drivetimebuckets[(timebucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
         driveweekbuckets[(weekbucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
+        driveweekdaybuckets[(weekdaybucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
         drivemonthbuckets[(monthbucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
 
     kml = simplekml.Kml()
@@ -225,69 +252,19 @@ def colorize():
 
     #drives by start time interval
     timeavgfolder = kml.newfolder(name='commutes by time', visibility=0)
-    averages = {}
-    for fn in commutes:
-        averages[fn] = timeavgfolder.newfolder(name=fn, visibility=0)
-        for bucket in sorted(list(set([x[3] for x in timebuckets.keys() if x[2] == fn]))):
-            drivecount = len(drivetimebuckets[(bucket, fn)])
-            avglength = round(numpy.mean([x[0] for x in drivetimebuckets[(bucket, fn)]]), 1)
-            avgspeed = round(numpy.mean([x[1] for x in drivetimebuckets[(bucket, fn)]]), 1)
-            foldername = '%s (%s drives/%smi/%smph)' % (bucket, drivecount, avglength, avgspeed)
-            averages[fn+bucket] = averages[fn].newfolder(name=foldername, visibility=0)
-            averages[fn+bucket+'-speed'] = averages[fn+bucket].newfolder(name='speed points', visibility=0)
-
-    for k,v in timebuckets.iteritems():
-        prevlinename, name, drivetype, bucket = k
-        if drivetype not in commutes:
-            continue
-        avgspeed = numpy.mean([speed for speed, coords, length in v])
-        length = numpy.mean([length for speed, coords, length in v])
-        coords = sorted([x[1] for x in v], key=lambda x: len(x))[-1] #pick one with most coords
-        makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], name, coords, avgspeed, length)
+    commutesplitbucket(timeavgfolder, timebuckets, drivetimebuckets)
 
     #drives by week
     weekavgfolder = kml.newfolder(name='commutes by week', visibility=0)
-    averages = {}
-    for fn in commutes:
-        averages[fn] = weekavgfolder.newfolder(name=fn, visibility=0)
-        for bucket in sorted(list(set([x[3] for x in weekbuckets.keys() if x[2] == fn]))):
-            drivecount = len(driveweekbuckets[(bucket, fn)])
-            avglength = round(numpy.mean([x[0] for x in driveweekbuckets[(bucket, fn)]]), 1)
-            avgspeed = round(numpy.mean([x[1] for x in driveweekbuckets[(bucket, fn)]]), 1)
-            foldername = '%s (%s drives/%smi/%smph)' % (bucket, drivecount, avglength, avgspeed)
-            averages[fn+bucket] = averages[fn].newfolder(name=foldername, visibility=0)
-            averages[fn+bucket+'-speed'] = averages[fn+bucket].newfolder(name='speed points', visibility=0)
-
-    for k,v in weekbuckets.iteritems():
-        prevlinename, name, drivetype, bucket = k
-        if drivetype not in commutes:
-            continue
-        avgspeed = numpy.mean([speed for speed, coords, length in v])
-        length = numpy.mean([length for speed, coords, length in v])
-        coords = sorted([x[1] for x in v], key=lambda x: len(x))[-1] #pick one with most coords
-        makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], name, coords, avgspeed, length)
+    commutesplitbucket(weekavgfolder, weekbuckets, driveweekbuckets)
 
     #drives by month
     monthavgfolder = kml.newfolder(name='commutes by month', visibility=0)
-    averages = {}
-    for fn in commutes:
-        averages[fn] = monthavgfolder.newfolder(name=fn, visibility=0)
-        for bucket in sorted(list(set([x[3] for x in monthbuckets.keys() if x[2] == fn]))):
-            drivecount = len(drivemonthbuckets[(bucket, fn)])
-            avglength = round(numpy.mean([x[0] for x in drivemonthbuckets[(bucket, fn)]]), 1)
-            avgspeed = round(numpy.mean([x[1] for x in drivemonthbuckets[(bucket, fn)]]), 1)
-            foldername = '%s (%s drives/%smi/%smph)' % (bucket, drivecount, avglength, avgspeed)
-            averages[fn+bucket] = averages[fn].newfolder(name=foldername, visibility=0)
-            averages[fn+bucket+'-speed'] = averages[fn+bucket].newfolder(name='speed points', visibility=0)
+    commutesplitbucket(monthavgfolder, monthbuckets, drivemonthbuckets)
 
-    for k,v in monthbuckets.iteritems():
-        prevlinename, name, drivetype, bucket = k
-        if drivetype not in commutes:
-            continue
-        avgspeed = numpy.mean([speed for speed, coords, length in v])
-        length = numpy.mean([length for speed, coords, length in v])
-        coords = sorted([x[1] for x in v], key=lambda x: len(x))[-1] #pick one with most coords
-        makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], name, coords, avgspeed, length)
+    #drives by day of week
+    weekdayavgfolder = kml.newfolder(name='commutes by weekday', visibility=0)
+    commutesplitbucket(weekdayavgfolder, weekdaybuckets, driveweekdaybuckets)
 
     #averages
     avgfolder = kml.newfolder(name='averages', visibility=0)

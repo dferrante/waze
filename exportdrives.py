@@ -2,7 +2,6 @@ import requests, os, commands, datetime, sys, simplekml, numpy, re, math, collec
 from gnosis.xml.objectify import make_instance
 
 #configurables
-
 outfile = 'drives.kml' # where final kml is written
 kmlfolderrules = [
     ('morning', lambda x: x['startdate'].weekday() < 5 and x['startdate'].hour >= 8 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 50),
@@ -23,8 +22,12 @@ sessionlist_url = "https://www.waze.com/Descartes-live/app/Archive/MyList"
 def export(username, password):
     # login
     req = requests.post(session_url, data={'userName': username, 'password': password})
-    authdict = dict([req.headers['set-cookie'].split(';')[0].split('=',1),]) if req.headers['set-cookie'] else {}
-    if 'USERAUTH' not in authdict:
+    try:
+        authdict = dict([req.headers['set-cookie'].split(';')[0].split('=',1),]) if req.headers['set-cookie'] else {}
+        if 'USERAUTH' not in authdict:
+            print 'login failed, check credentials'
+            sys.exit(255)
+    except:
         print 'login failed, check credentials'
         sys.exit(255)
 
@@ -282,27 +285,27 @@ def colorize():
     drivefolder = kml.newfolder(name='drives', visibility=0)
     drivesplitbucket(drivefolder, sortedfoldernames, drivedata, linedata, 'startdate')
 
-    #drives by speed
-    drivefolder = kml.newfolder(name='commutes by speed', visibility=0)
-    drivesplitbucket(drivefolder, commutes, drivedata, linedata, 'avgspeed')
-
     #drives by length
     drivefolder = kml.newfolder(name='drives by length', visibility=0)
     drivesplitbucket(drivefolder, sortedfoldernames + ['all'], drivedata, linedata, 'distance')
 
-    #drives by start time interval
+    #commutes by speed
+    drivefolder = kml.newfolder(name='commutes by speed', visibility=0)
+    drivesplitbucket(drivefolder, commutes, drivedata, linedata, 'avgspeed')
+
+    #commutes by start time interval
     timeavgfolder = kml.newfolder(name='commutes by depart time', visibility=0)
     commutesplitbucket(timeavgfolder, timebuckets, drivetimebuckets, linedata)
 
-    #drives by week
+    #commutes by week
     weekavgfolder = kml.newfolder(name='commutes by week', visibility=0)
     commutesplitbucket(weekavgfolder, weekbuckets, driveweekbuckets, linedata)
 
-    #drives by month
+    #commutes by month
     monthavgfolder = kml.newfolder(name='commutes by month', visibility=0)
     commutesplitbucket(monthavgfolder, monthbuckets, drivemonthbuckets, linedata)
 
-    #drives by day of week
+    #commutes by day of week
     weekdayavgfolder = kml.newfolder(name='commutes by weekday', visibility=0)
     commutesplitbucket(weekdayavgfolder, weekdaybuckets, driveweekdaybuckets, linedata)
 

@@ -114,7 +114,7 @@ def parsekmlname(name):
 
     fmtname = '%s-%s (%smi/%smin/%smph)' % (startdate.strftime('%m/%d %I:%M%p'), enddate.strftime('%I:%M%p'), distance, triptime, avgspeed)
     self = {'filename': name, 'distance': distance, 'startdate': startdate,
-            'enddate': enddate, 'avgspeed': avgspeed, 'fmtname': fmtname, 'fmtname': fmtname}
+            'enddate': enddate, 'avgspeed': avgspeed, 'fmtname': fmtname}
 
     for folder, rule in kmlfolderrules:
         if rule(self):
@@ -143,7 +143,7 @@ def commutesplitbucket(folder, buckets, drivebuckets):
         makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], name, coords, avgspeed, length)
 
 
-def makespeedline(folder, spfolder, name, coords, speed, length):
+def makespeedline(folder, spfolder, name, coords, speed, length, speedlabel=None):
     line = folder.newlinestring(coords=coords, name='%s - %smi - %smph' % (name, length, int(speed)))
     line.style.linestyle.width = 6
     line.style.linestyle.color = colorspeed(speed)
@@ -151,7 +151,9 @@ def makespeedline(folder, spfolder, name, coords, speed, length):
 
     avgx = numpy.mean(map(float, [x[0] for x in coords]))
     avgy = numpy.mean(map(float, [x[1] for x in coords]))
-    point = spfolder.newpoint(name='%s' % int(speed), coords=[(avgx, avgy),])
+
+    speedlabel = '%s' % (speedlabel if speedlabel is not None else int(speed))
+    point = spfolder.newpoint(name=speedlabel, coords=[(avgx, avgy),])
     point.iconstyle.icon.href = ''
     point.style.labelstyle.color = colorspeed(speed)
     point.style.labelstyle.scale = 0.75
@@ -188,7 +190,7 @@ def colorize():
 
         prevlinename = 'start'
         weekbucketname = kmlfile['startdate'].strftime('%Y-%W')
-        weekdaybucketname = kmlfile['startdate'].strftime('%A')
+        weekdaybucketname = kmlfile['startdate'].strftime('(%w) %A')
         monthbucketname = kmlfile['startdate'].strftime('%Y-%m')
         timebucketname = '%s:%02d%s' % (int(kmlfile['startdate'].strftime('%I')),
                                         math.floor(kmlfile['startdate'].minute/60.0*(60/timeslices))*timeslices,
@@ -209,11 +211,11 @@ def colorize():
             length = round(int(data['length'])*0.000621371,1) #convert meters to miles
             speed = int(int(data['speed'])*0.621371) #convert kmh to mph
             coords = [tuple(x.split(',')) for x in l.LineString.coordinates.PCDATA.split()]
-            kmlfile['lines'].append((name, coords, speed, length))
 
             if speed > 120:
                 continue
 
+            kmlfile['lines'].append((name, coords, speed, length))
             linedata[(prevlinename, name, kmlfile['type'])].append((speed, coords, length))
             linedata[(prevlinename, name, 'all')].append((speed, coords, length))
             timebuckets[(prevlinename, name, kmlfile['type'], timebucketname)].append((speed, coords, length))
@@ -237,8 +239,25 @@ def colorize():
         for drive in sorted(drivedata[fn], key=lambda x: x['startdate'], reverse=True):
             folder = subfolder.newfolder(name=drive['fmtname'], visibility=0)
             spfolder = folder.newfolder(name='speed labels')
+
             for line in drive['lines']:
                 makespeedline(folder, spfolder, line[0], line[1], line[2], line[3])
+
+    #drives vs average
+    drivefolder = kml.newfolder(name='drives compared to average', visibility=0)
+    for fn in sortedfoldernames:
+        subfolder = drivefolder.newfolder(name=fn, visibility=0)
+        for drive in sorted(drivedata[fn], key=lambda x: x['startdate'], reverse=True):
+            folder = subfolder.newfolder(name=drive['fmtname'], visibility=0)
+            spfolder = folder.newfolder(name='speed labels')
+
+            prevlinename = 'start'
+            for line in drive['lines']:
+                avgspeed = numpy.mean([speed for speed, coords, length in linedata[(prevlinename, line[0], fn)]])
+                if avgspeed > 0:
+                    avgavgspeed = line[2]/float(avgspeed)*40
+                    makespeedline(folder, spfolder, line[0], line[1], avgavgspeed, line[3], int(line[2]-avgspeed))
+                prevlinename = line[0]
 
     #drives by speed
     byspeedfolder = kml.newfolder(name='commutes by speed', visibility=0)
@@ -251,7 +270,7 @@ def colorize():
                 makespeedline(folder, spfolder, line[0], line[1], line[2], line[3])
 
     #drives by start time interval
-    timeavgfolder = kml.newfolder(name='commutes by time', visibility=0)
+    timeavgfolder = kml.newfolder(name='commutes by depart time', visibility=0)
     commutesplitbucket(timeavgfolder, timebuckets, drivetimebuckets)
 
     #drives by week

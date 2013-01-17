@@ -1,4 +1,4 @@
-import requests, os, commands, time, datetime, sys, simplekml, numpy, re, math, collections
+import requests, os, commands, datetime, sys, simplekml, numpy, re, math, collections
 from gnosis.xml.objectify import make_instance
 
 #configurables
@@ -79,6 +79,9 @@ def export(username, password):
 
 
 def colorspeed(speed):
+    if speed == -1: # special case
+        return '66000000'
+
     alpha = 200
     speed = speed-10
     maxspeed = 90.0
@@ -125,6 +128,7 @@ def commutesplitbucket(folder, buckets, drivebuckets, linedata):
     averages = {}
     for drivetype in commutes:
         averages[drivetype] = folder.newfolder(name=drivetype, visibility=0)
+        averages[drivetype+'-avg'] = folder.newfolder(name='%s vs. avg' % drivetype, visibility=0)
         for bucket in sorted(list(set([x[3] for x in buckets.keys() if x[2] == drivetype]))):
             drivecount = len(drivebuckets[(bucket, drivetype)])
             avglength = round(numpy.mean([x[0] for x in drivebuckets[(bucket, drivetype)]]), 1)
@@ -132,8 +136,7 @@ def commutesplitbucket(folder, buckets, drivebuckets, linedata):
             foldername = '%s (%s drives/%smi/%smph)' % (bucket, drivecount, avglength, avgspeed)
             averages[drivetype+bucket] = averages[drivetype].newfolder(name=foldername, visibility=0)
             averages[drivetype+bucket+'-speed'] = averages[drivetype+bucket].newfolder(name='speed points', visibility=0)
-
-            averages[drivetype+bucket+'-avg'] = averages[drivetype+bucket].newfolder(name='against average', visibility=0)
+            averages[drivetype+bucket+'-avg'] = averages[drivetype+'-avg'].newfolder(name=foldername, visibility=0)
             averages[drivetype+bucket+'-avgspeed'] = averages[drivetype+bucket+'-avg'].newfolder(name='speed points', visibility=0)
 
     for k,v in buckets.iteritems():
@@ -147,8 +150,41 @@ def commutesplitbucket(folder, buckets, drivebuckets, linedata):
 
         avgdrivespeed = numpy.mean([speed for speed, coords, length in linedata[(prevlinename, name, drivetype)]])
         if avgdrivespeed > 0:
-            avgavgspeed = avgspeed/float(avgdrivespeed)*40
-            makespeedline(averages[drivetype+bucket+'-avg'], averages[drivetype+bucket+'-avgspeed'], name, coords, avgavgspeed, length, int(avgspeed-avgdrivespeed))
+            speeddiff = int(avgspeed-avgdrivespeed)
+            if speeddiff == 0:
+                avgavgspeed, speedlabel = -1, ""
+            elif speeddiff > 0:
+                avgavgspeed, speedlabel = avgspeed/float(avgdrivespeed)*55+15, speeddiff
+            else:
+                avgavgspeed, speedlabel = avgspeed/float(avgdrivespeed)*55-15, speeddiff
+
+            makespeedline(averages[drivetype+bucket+'-avg'], averages[drivetype+bucket+'-avgspeed'], name, coords, avgavgspeed, length, speeddiff)
+
+def drivesplitbucket(drivefolder, drivetypes, drivedata, linedata, sortkey):
+    for drivetype in drivetypes:
+        subfolder = drivefolder.newfolder(name=drivetype, visibility=0)
+        avgsubfolder = drivefolder.newfolder(name="%s vs. avg" % drivetype, visibility=0)
+        for drive in sorted(drivedata[drivetype], key=lambda x: x[sortkey], reverse=True):
+            folder = subfolder.newfolder(name=drive['fmtname'], visibility=0)
+            spfolder = folder.newfolder(name='speed labels')
+            avgfolder = avgsubfolder.newfolder(name=drive['fmtname'], visibility=0)
+            avgspfolder = avgfolder.newfolder(name='speed labels')
+
+            prevlinename = 'start'
+            for name, coords, speed, length in drive['lines']:
+                makespeedline(folder, spfolder, name, coords, speed, length)
+                avgdrivespeed = numpy.mean([s for s, c, l in linedata[(prevlinename, name, drivetype)]])
+                if avgdrivespeed > 0:
+                    speeddiff = int(speed-avgdrivespeed)
+                    if speeddiff == 0:
+                        avgavgspeed, speedlabel = -1, ""
+                    elif speeddiff > 0:
+                        avgavgspeed, speedlabel = speed/float(avgdrivespeed)*55+15, speeddiff
+                    else:
+                        avgavgspeed, speedlabel = speed/float(avgdrivespeed)*55-15, speeddiff
+
+                    makespeedline(avgfolder, avgspfolder, name, coords, avgavgspeed, length, speedlabel)
+                prevlinename = name
 
 def makespeedline(folder, spfolder, name, coords, speed, length, speedlabel=None):
     line = folder.newlinestring(coords=coords, name='%s - %smi - %smph' % (name, length, int(speed)))
@@ -156,18 +192,21 @@ def makespeedline(folder, spfolder, name, coords, speed, length, speedlabel=None
     line.style.linestyle.color = colorspeed(speed)
     line.tessellate = 1
 
+    if not folder.visibility:
+        line.visibility = 0
+
     avgx = numpy.mean(map(float, [x[0] for x in coords]))
     avgy = numpy.mean(map(float, [x[1] for x in coords]))
 
     speedlabel = '%s' % (speedlabel if speedlabel is not None else int(speed))
-    point = spfolder.newpoint(name=speedlabel, coords=[(avgx, avgy),])
-    point.iconstyle.icon.href = ''
-    point.style.labelstyle.color = colorspeed(speed)
-    point.style.labelstyle.scale = 0.75
+    if speedlabel:
+        point = spfolder.newpoint(name=speedlabel, coords=[(avgx, avgy),])
+        point.iconstyle.icon.href = ''
+        point.style.labelstyle.color = colorspeed(speed)
+        point.style.labelstyle.scale = 0.75
 
-    if not folder.visibility:
-        line.visibility = 0
-        point.visibility = 0
+        if not folder.visibility:
+            point.visibility = 0
 
 def colorize():
     kmlfiles = [parsekmlname(x) for x in os.listdir('.') if '.kml' in x and x != outfile]
@@ -241,47 +280,15 @@ def colorize():
 
     #drives
     drivefolder = kml.newfolder(name='drives', visibility=0)
-    for drivetype in sortedfoldernames:
-        subfolder = drivefolder.newfolder(name=drivetype, visibility=0)
-        for drive in sorted(drivedata[drivetype], key=lambda x: x['startdate'], reverse=True):
-            folder = subfolder.newfolder(name=drive['fmtname'], visibility=0)
-            spfolder = folder.newfolder(name='speed labels')
-
-            for line in drive['lines']:
-                makespeedline(folder, spfolder, line[0], line[1], line[2], line[3])
-
-    #drives vs average
-    drivefolder = kml.newfolder(name='drives compared to average', visibility=0)
-    for drivetype in sortedfoldernames:
-        subfolder = drivefolder.newfolder(name=drivetype, visibility=0)
-        for drive in sorted(drivedata[drivetype], key=lambda x: x['startdate'], reverse=True):
-            folder = subfolder.newfolder(name=drive['fmtname'], visibility=0)
-            spfolder = folder.newfolder(name='speed labels')
-
-            prevlinename = 'start'
-            for line in drive['lines']:
-                avgspeed = numpy.mean([speed for speed, coords, length in linedata[(prevlinename, line[0], drivetype)]])
-                if avgspeed > 0:
-                    avgavgspeed = line[2]/float(avgspeed)*40
-                    makespeedline(folder, spfolder, line[0], line[1], avgavgspeed, line[3], int(line[2]-avgspeed))
-                prevlinename = line[0]
+    drivesplitbucket(drivefolder, sortedfoldernames, drivedata, linedata, 'startdate')
 
     #drives by speed
-    byspeedfolder = kml.newfolder(name='commutes by speed', visibility=0)
-    for drivetype in commutes:
-        subfolder = byspeedfolder.newfolder(name=drivetype, visibility=0)
-        for drive in sorted(drivedata[drivetype], key=lambda x: x['avgspeed'], reverse=True):
-            folder = subfolder.newfolder(name=drive['fmtname'], visibility=0)
-            spfolder = folder.newfolder(name='speed labels')
+    drivefolder = kml.newfolder(name='commutes by speed', visibility=0)
+    drivesplitbucket(drivefolder, commutes, drivedata, linedata, 'avgspeed')
 
-            prevlinename = 'start'
-            for line in drive['lines']:
-                makespeedline(folder, spfolder, line[0], line[1], line[2], line[3])
-                avgspeed = numpy.mean([speed for speed, coords, length in linedata[(prevlinename, line[0], drivetype)]])
-                if avgspeed > 0:
-                    avgavgspeed = line[2]/float(avgspeed)*40
-                    makespeedline(folder, spfolder, line[0], line[1], avgavgspeed, line[3], int(line[2]-avgspeed))
-                prevlinename = line[0]
+    #drives by length
+    drivefolder = kml.newfolder(name='drives by length', visibility=0)
+    drivesplitbucket(drivefolder, sortedfoldernames + ['all'], drivedata, linedata, 'distance')
 
     #drives by start time interval
     timeavgfolder = kml.newfolder(name='commutes by depart time', visibility=0)

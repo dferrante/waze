@@ -4,8 +4,10 @@ from gnosis.xml.objectify import make_instance
 #configurables
 outfile = 'drives.kml' # where final kml is written
 kmlfolderrules = [
-    ('morning', lambda x: x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 50),
-    ('evening', lambda x: x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 35 and x['distance'] <= 50),
+    ('morning-old', lambda x: x['startdate'] < datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 50),
+    ('morning', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 50),
+    ('evening-old', lambda x: x['startdate'] < datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 35 and x['distance'] <= 50),
+    ('evening', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 35 and x['distance'] <= 50),
     ('long trips', lambda x: x['distance'] >= 150),
     ('other', lambda x: True),
 ] # use these to sort your drives so you can suss out your commute.  should always end with a catch-all that evals to True.
@@ -18,7 +20,7 @@ recent_drives_count = 20
 #waze API urls
 session_url = "https://www.waze.com/Descartes-live/app/Session"
 sessiondata_url = "https://www.waze.com/Descartes-live/app/Archive/Session"
-sessionlist_url = "https://www.waze.com/Descartes-live/app/Archive/MyList"
+sessionlist_url = "https://www.waze.com/Descartes-live/app/Archive/List"
 
 
 def export(username, password):
@@ -26,9 +28,6 @@ def export(username, password):
     req = requests.post(session_url, data={'userName': username, 'password': password})
     try:
         authdict = dict([req.headers['set-cookie'].split(';')[0].split('=',1),]) if req.headers['set-cookie'] else {}
-        if 'USERAUTH' not in authdict:
-            print 'login failed, check credentials'
-            sys.exit(255)
     except:
         print 'login failed, check credentials'
         sys.exit(255)
@@ -37,11 +36,11 @@ def export(username, password):
     print 'getting sessions'
     sessionlist = []
     offset = 0
-    sessions = requests.get(sessionlist_url, params={'count': 50, 'offset': offset}, cookies=authdict).json['archives']['objects']
+    sessions = requests.get(sessionlist_url, params={'count': 50, 'offset': offset}, cookies=authdict).json()['archives']['objects']
     while sessions:
         sessionlist += [x for x in sessions]
         offset += 50
-        sessions = requests.get(sessionlist_url, params={'count': 50, 'offset': offset}, cookies=authdict).json['archives']['objects']
+        sessions = requests.get(sessionlist_url, params={'count': 50, 'offset': offset}, cookies=authdict).json()['archives']['objects']
     print 'got %s sessions' % len(sessionlist)
     print 'done'
 
@@ -61,9 +60,9 @@ def export(username, password):
         if not os.path.exists(gmlfile) and not os.path.exists(kmlfile):
             data = requests.get(sessiondata_url, params={'id': session['id']}, cookies=authdict)
             try:
-                gml = data.json['archiveSessions']['objects'][0]['data']
+                gml = data.json()['archiveSessions']['objects'][0]['data']
             except Exception, e:
-                if 'code' in data.json and data.json['code'] == 101:
+                if 'code' in data.json() and data.json()['code'] == 101:
                     print 'the rest are invalid, stopping scan'
                     return
                 else:
@@ -239,6 +238,8 @@ def buildreports():
     drivemonthbuckets = collections.defaultdict(list)
     weekdaybuckets = collections.defaultdict(list)
     driveweekdaybuckets = collections.defaultdict(list)
+    distancebuckets = collections.defaultdict(list)
+    drivedistancebuckets = collections.defaultdict(list)
     for kmlfile in kmlfiles:
         if kmlfile['distance'] < 1:
             continue
@@ -258,6 +259,7 @@ def buildreports():
         timebucketname = '%s:%02d%s' % (int(kmlfile['startdate'].strftime('%I')),
                                         math.floor(kmlfile['startdate'].minute/60.0*(60/timeslices))*timeslices,
                                         kmlfile['startdate'].strftime('%p').lower())
+        distancebucketname = str(kmlfile['distance'])
         kmlfile['lines'] = []
         for l in lines:
             try:
@@ -295,6 +297,7 @@ def buildreports():
             weekbuckets[(prevlinename, name, kmlfile['type'], weekbucketname)].append((speed, coords, length))
             weekdaybuckets[(prevlinename, name, kmlfile['type'], weekdaybucketname)].append((speed, coords, length))
             monthbuckets[(prevlinename, name, kmlfile['type'], monthbucketname)].append((speed, coords, length))
+            distancebuckets[(prevlinename, name, kmlfile['type'], distancebucketname)].append((speed, coords, length))
             prevlinename = name
         drivedata[kmlfile['type']].append(kmlfile)
         drivedata['all'].append(kmlfile)
@@ -302,18 +305,25 @@ def buildreports():
         driveweekbuckets[(weekbucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
         driveweekdaybuckets[(weekdaybucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
         drivemonthbuckets[(monthbucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
+        drivedistancebuckets[(distancebucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
 
     print 'calculating'
     kmloutput = collections.defaultdict(list)
     for kof in ['drives', 'drives by length', 'commutes by speed', 'commutes by depart time', 'commutes by week',
-                'commutes by month', 'commutes by weekday', 'averages', 'top speeds']:
+                'commutes by month', 'commutes by weekday', 'averages', 'top speeds', 'commutes by distance']:
         kmloutput[kof] = simplekml.Kml(visibility=0)
-    #kmloutput['top speeds'] = simplekml.Kml(visibility=0)
 
     sortedfoldernames = [folder for folder, rule in kmlfolderrules]
 
     #drives
     drivesplitbucket(kmloutput['drives'], sortedfoldernames, drivedata, linedata, 'startdate')
+
+    f = open('morning.dta', 'w')
+    for drive in drivedata['morning']:
+        for name, coords, speed, length in drive['lines']:
+            for coord in coords:
+                f.write('%s %s\n'%(float(coord[0])+74, float(coord[1])-40))
+    f.close()
 
     #drives by length
     drivesplitbucket(kmloutput['drives by length'], sortedfoldernames + ['all'], drivedata, linedata, 'distance', 10, 10)
@@ -332,6 +342,9 @@ def buildreports():
 
     #commutes by day of week
     commutesplitbucket(kmloutput['commutes by weekday'], weekdaybuckets, driveweekdaybuckets, linedata)
+
+    #commutes by distance
+    commutesplitbucket(kmloutput['commutes by distance'], distancebuckets, drivedistancebuckets, linedata)
 
     #averages
     averages = {}
@@ -354,7 +367,6 @@ def buildreports():
         topspeeds[drivetype] = kmloutput['top speeds'].newfolder(name=drivetype, visibility=0)
         topspeeds[drivetype+'-speed'] = topspeeds[drivetype].newfolder(name='speed labels', visibility=0)
 
-        #for k,v in sorted(filter(lambda x: x[0][2] == drivetype, linedata.iteritems()), key=lambda x: max([s for s, c, l in x[1]]), reverse=True):
         for k,v in sorted(filter(lambda x: x[0][2] == drivetype, linedata.iteritems()), key=lambda x: x[0][1], reverse=True):
             prevlinename, name, drivetype = k
             topspeed = max([speed for speed, coords, length in v])
@@ -363,18 +375,13 @@ def buildreports():
             #coords = primarycurve([coords for speed, coords, length in v])
             makespeedline(topspeeds[drivetype], topspeeds[drivetype+'-speed'], name, coords, topspeed, length)
 
-    #allkml = simplekml.Kml()
     for name, kml in kmloutput.items():
         outfile = '%s.kml' % name
         print 'writing', outfile
         kml.save(outfile)
-        print 'wrote', outfile
-        #netlink = allkml.newnetworklink(name=name)
-        #netlink.link.href = "./%s.kml" % name
-        #netlink.link.viewrefreshmode = simplekml.ViewRefreshMode.never
-    #kml.save("all.kml")
 
 if __name__ == '__main__':
     username = raw_input('username: ')
     password = raw_input('password: ')
     export(username, password)
+    buildreports()

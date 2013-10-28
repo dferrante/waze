@@ -4,30 +4,29 @@ from gnosis.xml.objectify import make_instance
 #configurables
 outfile = 'drives.kml' # where final kml is written
 kmlfolderrules = [
-    ('morning-old', lambda x: x['startdate'] < datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 50),
-    ('morning', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 50),
-    ('evening-old', lambda x: x['startdate'] < datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 35 and x['distance'] <= 50),
-    ('evening', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 35 and x['distance'] <= 50),
+    #('morning-old', lambda x: x['startdate'] < datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 50),
+    ('morning', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 45 and x['distance'] <= 52),
+    #('evening-old', lambda x: x['startdate'] < datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 35 and x['distance'] <= 50),
+    ('evening', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 46 and x['distance'] <= 52),
     ('long trips', lambda x: x['distance'] >= 150),
     ('other', lambda x: True),
 ] # use these to sort your drives so you can suss out your commute.  should always end with a catch-all that evals to True.
 commutes = ['morning', 'evening'] # which of the above are regular routes
 removegmlfiles = True # delete .gml files after downloading
-timeslices = 5 # minutes per bucket to break up commutes by time, must be factor of 60
+timeslices = 10 # minutes per bucket to break up commutes by time, must be factor of 60
 top_and_bottom_ranking_limit = 10
-recent_drives_count = 20
+recent_drives_count = 40
 
 #waze API urls
-session_url = "https://www.waze.com/Descartes-live/app/Session"
+session_url = "https://www.waze.com/login/create"
 sessiondata_url = "https://www.waze.com/Descartes-live/app/Archive/Session"
 sessionlist_url = "https://www.waze.com/Descartes-live/app/Archive/List"
 
-
 def export(username, password):
     # login
-    req = requests.post(session_url, data={'userName': username, 'password': password})
+    req = requests.post(session_url, data={'user_id': username, 'password': password})
     try:
-        authdict = dict([req.headers['set-cookie'].split(';')[0].split('=',1),]) if req.headers['set-cookie'] else {}
+        authdict = dict(req.cookies)
     except:
         print 'login failed, check credentials'
         sys.exit(255)
@@ -105,6 +104,10 @@ def datadict(data):
         d[item.name] = item.PCDATA
     return d
 
+def averagetime(dates):
+    avgseconds = numpy.mean([date.hour * 60 * 60 + date.minute * 60 + date.second for date in dates])
+    return '%s:%s' % (int(avgseconds / 3600), int(avgseconds%60))
+
 def parsekmlname(name):
     try:
         sd = map(int,name[:-4].split('-')[:3])
@@ -145,6 +148,7 @@ def commutesplitbucket(folder, buckets, drivebuckets, linedata, linelimit=0):
 
     for k,v in buckets.iteritems():
         prevlinename, name, drivetype, bucket = k
+        speeds, coords, lengths, dates = zip(*v)
 
         #exclude non-commutes
         if drivetype not in commutes:
@@ -152,12 +156,14 @@ def commutesplitbucket(folder, buckets, drivebuckets, linedata, linelimit=0):
         if len(v) < linelimit:
             continue
 
-        avgspeed = numpy.mean([speed for speed, coords, length in v])
-        length = numpy.mean([length for speed, coords, length in v])
-        coords = sorted([x[1] for x in v], key=lambda x: len(x))[-1] #pick one with most coords
-        makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], name, coords, avgspeed, length)
+        avgspeed = numpy.mean(speeds)
+        length = numpy.mean(lengths)
+        avgdate = averagetime(dates)
+        coords = max(coords, key=lambda x: len(x)) #pick one with most coords
+        display_name = '%s %s (%s)' % (avgdate, name, len(v))
+        makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], display_name, coords, avgspeed, length)
 
-        avgdrivespeed = numpy.mean([speed for speed, coords, length in linedata[(prevlinename, name, drivetype)]])
+        avgdrivespeed = numpy.mean([speed for speed, coords, length, date in linedata[(prevlinename, name, drivetype)]])
         if avgdrivespeed > 0:
             speeddiff = int(avgspeed-avgdrivespeed)
             if speeddiff == 0:
@@ -167,7 +173,7 @@ def commutesplitbucket(folder, buckets, drivebuckets, linedata, linelimit=0):
             else:
                 avgavgspeed, speedlabel = avgspeed/float(avgdrivespeed)*55-15, speeddiff
 
-            makespeedline(averages[drivetype+bucket+'-avg'], averages[drivetype+bucket+'-avgspeed'], name, coords, avgavgspeed, length, speeddiff)
+            makespeedline(averages[drivetype+bucket+'-avg'], averages[drivetype+bucket+'-avgspeed'], display_name, coords, avgavgspeed, length, speeddiff)
 
 def drivesplitbucket(drivefolder, drivetypes, drivedata, linedata, sortkey, topcount=20, bottomcount=0):
     for drivetype in drivetypes:
@@ -185,9 +191,10 @@ def drivesplitbucket(drivefolder, drivetypes, drivedata, linedata, sortkey, topc
             avgspfolder = avgfolder.newfolder(name='speed labels')
 
             prevlinename = 'start'
-            for name, coords, speed, length in drive['lines']:
-                makespeedline(folder, spfolder, name, coords, speed, length)
-                avgdrivespeed = numpy.mean([s for s, c, l in linedata[(prevlinename, name, drivetype)]])
+            for name, coords, speed, length, date in sorted(drive['lines'], key=lambda x:x[4]):
+                display_name = '%s %s' % (date.strftime('%H:%M'), name)
+                makespeedline(folder, spfolder, display_name, coords, speed, length)
+                avgdrivespeed = numpy.mean([s for s, c, l, d in linedata[(prevlinename, name, drivetype)]])
                 if avgdrivespeed > 0:
                     speeddiff = int(speed-avgdrivespeed)
                     if speeddiff == 0:
@@ -197,7 +204,7 @@ def drivesplitbucket(drivefolder, drivetypes, drivedata, linedata, sortkey, topc
                     else:
                         avgavgspeed, speedlabel = speed/float(avgdrivespeed)*55-15, speeddiff
 
-                    makespeedline(avgfolder, avgspfolder, name, coords, avgavgspeed, length, speedlabel)
+                    makespeedline(avgfolder, avgspfolder, display_name, coords, avgavgspeed, length, speedlabel)
                 prevlinename = name
 
 def makespeedline(folder, spfolder, name, coords, speed, length, speedlabel=None):
@@ -230,6 +237,8 @@ def buildreports():
     print 'parsing kml files'
     drivedata = collections.defaultdict(list)
     linedata = collections.defaultdict(list)
+    linebuckets = collections.defaultdict(list)
+    drivelinebuckets = collections.defaultdict(list)
     timebuckets = collections.defaultdict(list)
     drivetimebuckets = collections.defaultdict(list)
     weekbuckets = collections.defaultdict(list)
@@ -241,6 +250,7 @@ def buildreports():
     distancebuckets = collections.defaultdict(list)
     drivedistancebuckets = collections.defaultdict(list)
     for kmlfile in kmlfiles:
+        print '.',
         if kmlfile['distance'] < 1:
             continue
 
@@ -286,18 +296,21 @@ def buildreports():
             date += datetime.timedelta(hours=-5)
             if date < kmlfile['startdate']:
                 date += datetime.timedelta(days=1)
+            fullname = '%s - %s' % (prevlinename, name)
 
             if speed > 120:
                 continue
 
-            kmlfile['lines'].append((name, coords, speed, length))
-            linedata[(prevlinename, name, kmlfile['type'])].append((speed, coords, length))
-            linedata[(prevlinename, name, 'all')].append((speed, coords, length))
-            timebuckets[(prevlinename, name, kmlfile['type'], timebucketname)].append((speed, coords, length))
-            weekbuckets[(prevlinename, name, kmlfile['type'], weekbucketname)].append((speed, coords, length))
-            weekdaybuckets[(prevlinename, name, kmlfile['type'], weekdaybucketname)].append((speed, coords, length))
-            monthbuckets[(prevlinename, name, kmlfile['type'], monthbucketname)].append((speed, coords, length))
-            distancebuckets[(prevlinename, name, kmlfile['type'], distancebucketname)].append((speed, coords, length))
+            kmlfile['lines'].append((name, coords, speed, length, date))
+            linedata[(prevlinename, name, kmlfile['type'])].append((speed, coords, length, date))
+            linedata[(prevlinename, name, 'all')].append((speed, coords, length, date))
+            timebuckets[(prevlinename, name, kmlfile['type'], timebucketname)].append((speed, coords, length, date))
+            weekbuckets[(prevlinename, name, kmlfile['type'], weekbucketname)].append((speed, coords, length, date))
+            linebuckets[(prevlinename, name, kmlfile['type'], fullname)].append((speed, coords, length, date))
+            drivelinebuckets[(fullname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
+            weekdaybuckets[(prevlinename, name, kmlfile['type'], weekdaybucketname)].append((speed, coords, length, date))
+            monthbuckets[(prevlinename, name, kmlfile['type'], monthbucketname)].append((speed, coords, length, date))
+            distancebuckets[(prevlinename, name, kmlfile['type'], distancebucketname)].append((speed, coords, length, date))
             prevlinename = name
         drivedata[kmlfile['type']].append(kmlfile)
         drivedata['all'].append(kmlfile)
@@ -307,61 +320,63 @@ def buildreports():
         drivemonthbuckets[(monthbucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
         drivedistancebuckets[(distancebucketname, kmlfile['type'])].append((kmlfile['distance'], kmlfile['avgspeed']))
 
-    print 'calculating'
+
+    print '\nbuilding kmls'
     kmloutput = collections.defaultdict(list)
     for kof in ['drives', 'drives by length', 'commutes by speed', 'commutes by depart time', 'commutes by week',
-                'commutes by month', 'commutes by weekday', 'averages', 'top speeds', 'commutes by distance']:
+                'commutes by month', 'commutes by weekday', 'averages', 'top speeds', 'commutes by distance', 'segments']:
         kmloutput[kof] = simplekml.Kml(visibility=0)
 
     sortedfoldernames = [folder for folder, rule in kmlfolderrules]
 
-    #drives
-    drivesplitbucket(kmloutput['drives'], sortedfoldernames, drivedata, linedata, 'startdate')
+    print 'drives'
+    drivesplitbucket(kmloutput['drives'], sortedfoldernames, drivedata, linedata, 'startdate', recent_drives_count)
 
-    f = open('morning.dta', 'w')
-    for drive in drivedata['morning']:
-        for name, coords, speed, length in drive['lines']:
-            for coord in coords:
-                f.write('%s %s\n'%(float(coord[0])+74, float(coord[1])-40))
-    f.close()
+    print 'segments'
+    commutesplitbucket(kmloutput['segments'], linebuckets, drivelinebuckets, linedata)
 
-    #drives by length
+    print 'drives by length'
     drivesplitbucket(kmloutput['drives by length'], sortedfoldernames + ['all'], drivedata, linedata, 'distance', 10, 10)
 
-    #commutes by speed
+    print 'commutes by speed'
     drivesplitbucket(kmloutput['commutes by speed'], commutes, drivedata, linedata, 'avgspeed', 10, 10)
 
-    #commutes by start time interval
+    print 'commutes by start time interval'
     commutesplitbucket(kmloutput['commutes by depart time'], timebuckets, drivetimebuckets, linedata)
 
-    #commutes by week
+    print 'commutes by week'
     commutesplitbucket(kmloutput['commutes by week'], weekbuckets, driveweekbuckets, linedata)
 
-    #commutes by month
+    print 'commutes by month'
     commutesplitbucket(kmloutput['commutes by month'], monthbuckets, drivemonthbuckets, linedata)
 
-    #commutes by day of week
+    print 'commutes by day of week'
     commutesplitbucket(kmloutput['commutes by weekday'], weekdaybuckets, driveweekdaybuckets, linedata)
 
-    #commutes by distance
+    print 'commutes by distance'
     commutesplitbucket(kmloutput['commutes by distance'], distancebuckets, drivedistancebuckets, linedata)
 
-    #averages
+    print 'averages'
     averages = {}
     for drivetype in sortedfoldernames + ['all']:
         averages[drivetype] = kmloutput['averages'].newfolder(name=drivetype, visibility=0)
         averages[drivetype+'-speed'] = averages[drivetype].newfolder(name='speed labels', visibility=0)
 
-    for k,v in linedata.iteritems():
+    for k,v in sorted(linedata.iteritems(), key=lambda x:x[0][1]):
         prevlinename, name, drivetype = k
+        if not v:
+            continue
         if len(v) <= 5 and drivetype in commutes:
             continue
-        avgspeed = numpy.mean([speed for speed, coords, length in v])
-        length = numpy.mean([length for speed, coords, length in v])
-        coords = sorted([x[1] for x in v], key=lambda x: len(x))[-1] #pick one with most coords
-        makespeedline(averages[drivetype], averages[drivetype+'-speed'], name, coords, avgspeed, length)
+        speeds, coords, lengths, dates = zip(*v)
+        avgspeed = numpy.mean(speeds)
+        length = numpy.mean(lengths)
+        coords = max(coords, key=lambda x: len(x)) #pick one with most coords
+        avgdate = averagetime(dates)
+        display_name = '%s %s' % (avgdate, name)
+        makespeedline(averages[drivetype], averages[drivetype+'-speed'], display_name, coords, avgspeed, length)
 
-    #top speeds
+    print 'top speeds'
     topspeeds = {}
     for drivetype in sortedfoldernames + ['all']:
         topspeeds[drivetype] = kmloutput['top speeds'].newfolder(name=drivetype, visibility=0)
@@ -369,11 +384,15 @@ def buildreports():
 
         for k,v in sorted(filter(lambda x: x[0][2] == drivetype, linedata.iteritems()), key=lambda x: x[0][1], reverse=True):
             prevlinename, name, drivetype = k
-            topspeed = max([speed for speed, coords, length in v])
-            length = numpy.mean([length for speed, coords, length in v])
-            coords = sorted([x[1] for x in v], key=lambda x: len(x))[-1] #pick one with most coords
-            #coords = primarycurve([coords for speed, coords, length in v])
-            makespeedline(topspeeds[drivetype], topspeeds[drivetype+'-speed'], name, coords, topspeed, length)
+            if not v:
+                continue
+            speeds, coords, lengths, dates = zip(*v)
+            topspeed = max(speeds)
+            length = numpy.mean(lengths)
+            coords = max(coords, key=lambda x: len(x)) #pick one with most coords
+            avgdate = averagetime(dates)
+            display_name = '%s %s' % (avgdate, name)
+            makespeedline(topspeeds[drivetype], topspeeds[drivetype+'-speed'], display_name, coords, topspeed, length)
 
     for name, kml in kmloutput.items():
         outfile = '%s.kml' % name

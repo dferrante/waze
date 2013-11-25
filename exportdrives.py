@@ -1,3 +1,4 @@
+from bokeh import plotting
 import collections
 import commands
 import datetime
@@ -6,6 +7,7 @@ import ipdb
 import math
 import numpy as np
 import os
+import random
 import re
 import requests
 from rpy2.robjects.packages import importr
@@ -14,10 +16,12 @@ import simplekml
 import simplejson
 import string
 import sys
+import time
 import uuid
 from gnosis.xml.objectify import make_instance
 
 db = dataset.connect('sqlite:///waze.db')
+#db = dataset.connect('sqlite:///:memory:')
 pclib = importr("princurve")
 
 #configurables
@@ -174,7 +178,7 @@ def parsekmlname(name):
     except:
         return False
 
-def commutesplitbucket(kmlname, drivebucket, drivetable, linetable, clustertable):
+def commutesplitbucket(kmlname, drivebucket, drivetable, linetable, clustertable, linelimit):
     kmloutput = simplekml.Kml(visibility=0)
     print 'calculating', kmlname
 
@@ -187,6 +191,8 @@ def commutesplitbucket(kmlname, drivebucket, drivetable, linetable, clustertable
             bucket = bucket[drivebucket]
             bucketdrives = list(db.query('select id, distance, avgspeed from drives where type="%s" and %s="%s"' % (drivetype, drivebucket, bucket)))
             drivecount = len(bucketdrives)
+            if drivecount < linelimit:
+                continue
             avglength = round(np.mean([x['distance'] for x in bucketdrives]), 1)
             avgspeed = round(np.mean([x['avgspeed'] for x in bucketdrives]), 1)
             avgtime = round((avglength/avgspeed)*60, 1)
@@ -201,6 +207,8 @@ def commutesplitbucket(kmlname, drivebucket, drivetable, linetable, clustertable
                     bucketclusters[(line['cluster'], bucket, drivetype)].append(line)
 
     for (cmatch, bucket, drivetype), lines in bucketclusters.iteritems():
+        if clustertable.find_one(uuid=cmatch, type=drivetype)['count'] < 10:
+            continue
         avgspeed = np.mean([l['speed'] for l in lines])
         length = np.mean([l['length'] for l in lines])
         avgdate = averagetime([l['date'] for l in lines])
@@ -208,7 +216,7 @@ def commutesplitbucket(kmlname, drivebucket, drivetable, linetable, clustertable
         display_name = '%s %s (%s)' % (avgdate, ', '.join(list(set([l['name'] for l in lines]))), len(lines))
         makespeedline(averages[drivetype+bucket], averages[drivetype+bucket+'-speed'], display_name, coords, avgspeed, length)
 
-        avgdrivespeed = clustertable.find_one(uuid=cmatch)['speed']
+        avgdrivespeed = clustertable.find_one(uuid=cmatch, type='all')['speed']
         if avgdrivespeed > 0:
             speeddiff = int(avgspeed-avgdrivespeed)
             avgavgspeed = -1 if speeddiff == 0 else avgspeed/float(avgdrivespeed)*55+15 if speeddiff > 0 else avgspeed/float(avgdrivespeed)*55-15
@@ -248,7 +256,7 @@ def drivesplitbucket(kmlname, drivetypes, drivetable, linetable, clustertable, s
                 display_name = '%s %s' % (line['date'].strftime('%H:%M'), line['name'])
                 coords = simplejson.loads(line['coords'])
                 makespeedline(folder, spfolder, display_name, coords, line['speed'], line['length'])
-                avgdrivespeed = clustertable.find_one(uuid=line['cluster'])['speed']
+                avgdrivespeed = clustertable.find_one(uuid=line['cluster'], type='all')['speed']
                 if avgdrivespeed > 0:
                     speeddiff = int(line['speed']-avgdrivespeed)
                     if speeddiff == 0:
@@ -260,6 +268,23 @@ def drivesplitbucket(kmlname, drivetypes, drivetable, linetable, clustertable, s
 
                     makespeedline(avgfolder, avgspfolder, display_name, coords, avgavgspeed, line['length'], speedlabel)
                 prevlinename = line['name']
+
+    print 'writing', kmlname
+    kmloutput.save('%s.kml' % kmlname)
+
+def clusterspeedbucket(kmlname, drivetypes, drivetable, linetable, clustertable, speedkey):
+    kmloutput = simplekml.Kml(visibility=0)
+    print 'calculating', kmlname
+    drives = {}
+    for drivetype in drivetypes:
+        drives[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
+        drives[drivetype+'-speed'] = drives[drivetype].newfolder(name='speed labels', visibility=0)
+
+    for cluster in clustertable.all():
+        if cluster['type'] != 'all' and cluster['count'] < 10:
+            continue
+        coords = [(x, y) for x, y in simplejson.loads(cluster['coords'])]
+        makespeedline(drives[cluster['type']], drives[cluster['type']+'-speed'], cluster['name'], coords, cluster[speedkey], cluster['length'])
 
     print 'writing', kmlname
     kmloutput.save('%s.kml' % kmlname)
@@ -290,10 +315,10 @@ def greatcirclecluster(line, clusters):
     coords = simplejson.loads(line['coords'])
     startpt = coords[0]
     endpt = coords[-1]
-    max_distance = 200
+    max_distance = 50
     cmatch = False
 
-    for cname, (cstart, cend, count, coords) in clusters.iteritems():
+    for cname, (cstart, cend, count, x) in sorted(clusters.iteritems(), key=lambda c: c[1][2]):
         sdist = haversine(startpt[0], startpt[1], cstart[0], cstart[1])
         if sdist <= max_distance:
             edist = haversine(endpt[0], endpt[1], cend[0], cend[1])
@@ -305,7 +330,7 @@ def greatcirclecluster(line, clusters):
             ((clusters[cmatch][0][0] + startpt[0]) / 2, (clusters[cmatch][0][1] + startpt[1]) / 2),
             ((clusters[cmatch][1][0] + endpt[0]) / 2, (clusters[cmatch][1][1] + endpt[1]) / 2),
             clusters[cmatch][2] + 1,
-            clusters[cmatch][3] + coords
+            max(clusters[cmatch][3], coords)
         )
     else:
         cmatch = str(uuid.uuid4())
@@ -313,9 +338,45 @@ def greatcirclecluster(line, clusters):
 
     return cmatch
 
+def namecluster(line, clusters):
+    coords = simplejson.loads(line['coords'])
+    startpt = coords[0]
+    endpt = coords[-1]
+    cmatch = (line['prevline'], line['name'])
+
+    if cmatch in clusters:
+        if line['type'] in clusters[cmatch]['speeds']:
+            clusters[cmatch]['speeds'][line['type']].append(line['speed'])
+        else:
+            clusters[cmatch]['speeds'][line['type']] = [line['speed'],]
+
+        clusters[cmatch]['names'].add(line['name'])
+
+        clusters[cmatch] = {
+            'startpt': ((clusters[cmatch]['startpt'][0] + startpt[0]) / 2, (clusters[cmatch]['startpt'][1] + startpt[1]) / 2),
+            'endpt': ((clusters[cmatch]['endpt'][0] + endpt[0]) / 2, (clusters[cmatch]['endpt'][1] + endpt[1]) / 2),
+            'count': clusters[cmatch]['count'] + 1,
+            'coords': max(clusters[cmatch]['coords'], coords),
+            'names': clusters[cmatch]['names'],
+            'speeds': clusters[cmatch]['speeds'],
+            'lengths': clusters[cmatch]['lengths'] + [line['length'],],
+        }
+    else:
+        clusters[cmatch] = {
+            'startpt': startpt,
+            'endpt': endpt,
+            'count': 1,
+            'coords': coords,
+            'speeds': {line['type']: [line['speed'],]},
+            'names': set([line['name'],]),
+            'lengths': [line['length'],],
+        }
+
+    return cmatch
+
 def principalcurve(coords):
     try:
-        array = [y for x in coords for y in x]
+        array = [y for x in sorted(coords, key=lambda x: x[0]) for y in x]
         matrix = robjects.r.matrix(robjects.FloatVector(array),ncol=2)
         pcurve = pclib.principal_curve(matrix)
         coords = zip(*2*[iter(pcurve[0])])
@@ -330,16 +391,11 @@ def buildreports():
 
     clustertable = db['clusters']
     clusters = {}
-    for cluster in clustertable.all():
-        clusters[cluster['uuid']] = (
-            simplejson.loads(cluster['startpt']),
-            simplejson.loads(cluster['endpt']),
-            cluster['count'],
-            simplejson.loads(cluster['coords'])
-        )
+    #for cluster in clustertable.all():
+        #clusters[cluster['uuid']] = cluster
 
     new = False
-    for kfile in [x for x in sorted(os.listdir('./data'))[-10:] if '.kml' in x]:
+    for kfile in [x for x in sorted(os.listdir('./data')) if '.kml' in x]:
         if not drivetable.find_one(filename=kfile):
             drive = parsekmlname(kfile)
 
@@ -374,7 +430,7 @@ def buildreports():
                     continue
 
                 speed = int(int(data['speed'])*0.621371) #convert kmh to mph
-                if speed > 110 and speed <= 0:
+                if speed > 110 or speed <= 0:
                     continue
 
                 line = {
@@ -399,112 +455,111 @@ def buildreports():
                 if line['date'] < drive['startdate']:
                     line['date'] += datetime.timedelta(days=1)
 
-                line['cluster'] = greatcirclecluster(line, clusters)
+                line['cluster'] = repr(namecluster(line, clusters))
                 linelist.append(line)
                 prevline = line['name']
 
             linetable.insert_many(linelist)
 
     if new:
-        print 'building cluster averages'
-        avgarray = {}
-        for line in linetable.all():
-            if line['cluster'] in avgarray:
-                avgarray[line['cluster']] = np.append(line['speed'], avgarray[line['cluster']])
-            else:
-                avgarray[line['cluster']] = np.array([line['speed']])
-
         print 'adding cluster to db'
         clusterrows = []
-        for cname, (cstart, cend, count, coords) in clusters.iteritems():
+        for cname, cluster in clusters.iteritems():
+            for drivetype in cluster['speeds'].keys():
+                speedarray = np.array(cluster['speeds'][drivetype])
+                clusterrows.append({
+                    'uuid': repr(cname),
+                    'speed': int(speedarray.mean()),
+                    'minspeed': int(speedarray.min()),
+                    'maxspeed': int(speedarray.max()),
+                    'startpt': simplejson.dumps(cluster['startpt']),
+                    'endpt': simplejson.dumps(cluster['endpt']),
+                    'coords': simplejson.dumps(cluster['coords']),
+                    'count': len(speedarray),
+                    'type': drivetype,
+                    'speeds': simplejson.dumps(cluster['speeds']),
+                    'length': round(np.array(cluster['lengths']).mean(), 2),
+                    'name': '|'.join(cluster['names']),
+                })
+
+            speedarray = np.array([speed for dt in cluster['speeds'].values() for speed in dt])
             clusterrows.append({
-                'uuid': cname,
-                'speed': avgarray[cname].mean(),
-                'maxspeed': int(avgarray[cname].max()),
-                'minspeed': int(avgarray[cname].min()),
-                'startpt': simplejson.dumps(cstart),
-                'endpt': simplejson.dumps(cend),
-                'count': count,
-                'coords': simplejson.dumps(principalcurve(coords)),
+                'uuid': repr(cname),
+                'speed': int(speedarray.mean()),
+                'minspeed': int(speedarray.min()),
+                'maxspeed': int(speedarray.max()),
+                'startpt': simplejson.dumps(cluster['startpt']),
+                'endpt': simplejson.dumps(cluster['endpt']),
+                'coords': simplejson.dumps(cluster['coords']),
+                'count': cluster['count'],
+                'type': 'all',
+                'speeds': simplejson.dumps(cluster['speeds']),
+                'length': round(np.array(cluster['lengths']).mean(), 2),
+                'name': '|'.join(cluster['names']),
             })
         clustertable.delete()
         clustertable.insert_many(clusterrows)
 
 
     print 'building kmls'
-    sortedfoldernames = [folder for folder, rule in kmlfolderrules]
+    allfolders = [folder for folder, rule in kmlfolderrules] + ['all',]
 
-    drivesplitbucket('drives', sortedfoldernames, drivetable, linetable, clustertable, 'date(startdate) desc', recent_drives_count)
-    drivesplitbucket('drives by length', sortedfoldernames + ['all'], drivetable, linetable, clustertable, 'distance desc', 10)
-    drivesplitbucket('commutes by speed', commutes, drivetable, linetable, clustertable, 'avgspeed desc', 10, 10)
-    commutesplitbucket('commutes by depart time', 'timebucket', drivetable, linetable, clustertable)
-    commutesplitbucket('commutes by week', 'weekbucket', drivetable, linetable, clustertable)
-    commutesplitbucket('commutes by month', 'monthbucket', drivetable, linetable, clustertable)
-    commutesplitbucket('commutes by weekday', 'weekdaybucket', drivetable, linetable, clustertable)
-    commutesplitbucket('commutes by distance', 'distancebucket', drivetable, linetable, clustertable)
 
+    drivesplitbucket('drives', allfolders, drivetable, linetable, clustertable, 'date(startdate) desc', recent_drives_count)
+    drivesplitbucket('drives by length', allfolders, drivetable, linetable, clustertable, 'distance desc', 10)
+    drivesplitbucket('drives by avg speed', allfolders, drivetable, linetable, clustertable, 'avgspeed desc', 10, 10)
+    drivesplitbucket('drives by total time', allfolders, drivetable, linetable, clustertable, 'avgspeed desc', 10, 10)
+    commutesplitbucket('commutes by depart time', 'timebucket', drivetable, linetable, clustertable, 5)
+    commutesplitbucket('commutes by week', 'weekbucket', drivetable, linetable, clustertable, 3)
+    commutesplitbucket('commutes by month', 'monthbucket', drivetable, linetable, clustertable, 0)
+    commutesplitbucket('commutes by weekday', 'weekdaybucket', drivetable, linetable, clustertable, 0)
+    #commutesplitbucket('commutes by distance', 'distancebucket', drivetable, linetable, clustertable)
+    clusterspeedbucket('averages', allfolders, drivetable, linetable, clustertable, 'speed')
+    clusterspeedbucket('top speeds', allfolders, drivetable, linetable, clustertable, 'maxspeed')
+    clusterspeedbucket('slow speeds', allfolders, drivetable, linetable, clustertable, 'minspeed')
+
+    kmlname = "clusters"
     kmloutput = simplekml.Kml(visibility=0)
-    print 'averages'
-    averages = {}
-    for drivetype in sortedfoldernames + ['all']:
-        averages[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
-        averages[drivetype+'-speed'] = averages[drivetype].newfolder(name='speed labels', visibility=0)
+    print 'calculating', kmlname
+    drives = {}
+    for drivetype in allfolders:
+        drives[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
 
-    for cluster in clustertable.all():
-        for drivetype in linetable.distinct('type', cluster=cluster['uuid']):
-            drivetype = drivetype['type']
-            lines = list(linetable.find(cluster=cluster['uuid'], type=drivetype))
-            avgspeed = cluster['speed']
-            length = np.mean([l['length'] for l in lines])
-            coords = simplejson.loads(cluster['coords'])
-            avgdate = averagetime([l['date'] for l in lines])
-            display_name = '[%s] %s' % (avgdate, '|'.join(set([l['fullname'] for l in lines])))
-            makespeedline(averages[drivetype], averages[drivetype+'-speed'], display_name, coords, avgspeed, length)
-    print 'writing averages'
-    kmloutput.save('averages.kml')
+    countbuckets = {}
+    for cluster in clustertable.find(order_by='-count'):
+        clusterfolder = drives[cluster['type']].newfolder(name='%s: %s' % (cluster['count'], cluster['uuid']), visibility=0)
+        clusterspeedfolder = clusterfolder.newfolder(name='speed labels', visibility=0)
+        randomcolor = random.randint(1, 90)
+        for line in linetable.find(cluster=cluster['uuid']):
+            coords = [(x, y) for x, y in simplejson.loads(line['coords'])]
+            makespeedline(clusterfolder, clusterspeedfolder, line['name'], coords, randomcolor, line['length'])
 
-    #kmloutput = simplekml.Kml(visibility=0)
-    #print 'drivecounts'
-    #drivecounts = {}
-    #maxdrives = {}
-    #for drivetype in ['morning', 'all']:  #sortedfoldernames + ['all']:
-        #drivecounts[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
-        #drivecounts[drivetype+'-speed'] = drivecounts[drivetype].newfolder(name='speed labels', visibility=0)
-        #maxdrives[drivetype] = max([len(v) for k,v in linedata.iteritems() if drivetype == k[1]])
+    print 'writing', kmlname
+    kmloutput.save('%s.kml' % kmlname)
 
-    #for k,v in sorted(linedata.iteritems(), key=lambda y:len(y[1])):
-        #cname, drivetype = k
-        #names, speeds, coords, lengths, dates = zip(*v)
-        #avgspeed = np.mean(speeds)
-        #length = np.mean(lengths)
-        #mostcoords = max(coords, key=lambda x: len(x)) #pick one with most coords
-        #avgdate = averagetime(dates)
-        #display_name = ' - '.join(list(set(names)))
-        #makespeedline(drivecounts[drivetype], drivecounts[drivetype+'-speed'], display_name, mostcoords, len(v), length, maxspeed=maxdrives[drivetype])
+    #plotting.output_file("commutes.html", title="candlestick.py example",
+                #js="relative", css="relative")
+    #plotting.hold()
 
-    #print 'writing drivecounts'
-    #kmloutput.save('drivecounts.kml')
-
-    #kmloutput = simplekml.Kml(visibility=0)
-    #print 'top speeds'
-    #topspeeds = {}
-    #for drivetype in sortedfoldernames + ['all']:
-        #topspeeds[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
-        #topspeeds[drivetype+'-speed'] = topspeeds[drivetype].newfolder(name='speed labels', visibility=0)
-
-        #for k,v in sorted(filter(lambda x: x[0][2] == drivetype, linedata.iteritems()), key=lambda y: max(zip(*y[1])[0])):
-            #prevlinename, name, drivetype = k
-            #if not v:
+    #for drivetype in commutes:
+        #linedata = collections.defaultdict(list)
+        #for drive in db.query('select * from drives where type="%s" order by date(startdate) asc' % drivetype):
+            #if drive['triptime'] > 100:
                 #continue
-            #speeds, coords, lengths, dates = zip(*v)
-            #topspeed = max(speeds)
-            #length = np.mean(lengths)
-            #coords = max(coords, key=lambda x: len(x)) #pick one with most coords
-            #avgdate = averagetime(dates)
-            #display_name = '%s %s' % (avgdate, name)
-            #makespeedline(topspeeds[drivetype], topspeeds[drivetype+'-speed'], display_name, coords, topspeed, length)
-    #print 'writing top speeds'
-    #kmloutput.save('top speeds.kml')
+            #linedata['date'].append(datetime.datetime.strptime(drive['startdate'], '%Y-%m-%d %H:%M:%S.%f').strftime('%Y-%m-%d'))
+            #linedata['triptime'].append(drive['triptime'])
+
+        #print np.array(linedata['date'], dtype='datetime64[M]').astype('int')
+        #plotting.line(np.array(linedata['date'], dtype='datetime64').astype('int')*100000000, linedata['triptime'],
+             #x_axis_type="datetime", color='#A6CEE3', tools="pan,zoom,resize")
+
+        #plotting.curplot().title = "%s commute historical triptime" % drivetype
+        #plotting.xaxis().major_label_orientation = math.pi/4
+        #plotting.grid().grid_line_alpha=0.3
+
+        #plotting.figure()
+
+    #plotting.show()  # open a browser
 
 
 if __name__ == '__main__':

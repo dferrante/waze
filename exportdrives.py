@@ -27,6 +27,8 @@ pclib = importr("princurve")
 #configurables
 outfile = 'drives.kml' # where final kml is written
 kmlfolderrules = [
+    #('morning', lambda x:  x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 35 and x['distance'] <= 52),
+    #('evening', lambda x:  x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 35 and x['distance'] <= 52),
     ('morning', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 7 and x['startdate'].hour <= 10 and x['distance'] >= 45 and x['distance'] <= 52),
     ('evening', lambda x: x['startdate'] >= datetime.datetime(2013, 8, 5) and x['startdate'].weekday() < 5 and x['startdate'].hour >= 16 and x['startdate'].hour <= 19 and x['distance'] >= 46 and x['distance'] <= 52),
     ('other', lambda x: True),
@@ -35,7 +37,7 @@ commutes = ['morning', 'evening'] # which of the above are regular routes
 removegmlfiles = True # delete .gml files after downloading
 timeslices = 3 # minutes per bucket to break up commutes by time, must be factor of 60
 top_and_bottom_ranking_limit = 10
-recent_drives_count = 10
+recent_drives_count = 20
 
 #waze API urls
 session_url = "https://www.waze.com/login/create"
@@ -384,6 +386,17 @@ def principalcurve(coords):
         pass
     return coords
 
+def movingaverage(a, n):
+    if len(a) < n:
+        return a
+    ret = []
+    w = n/2
+    for c in range(len(a)):
+        s = 0 if c-w<0 else c-w
+        e = len(a) if c+w>len(a) else c+w
+        ret.append(np.mean(a[s:e]))
+    return ret
+
 def buildreports():
     print 'starting report'
     drivetable = db['drives']
@@ -509,7 +522,7 @@ def buildreports():
     drivesplitbucket('drives by length', allfolders, drivetable, linetable, clustertable, 'distance desc', 10)
     drivesplitbucket('drives by avg speed', allfolders, drivetable, linetable, clustertable, 'avgspeed desc', 10, 10)
     drivesplitbucket('drives by total time', allfolders, drivetable, linetable, clustertable, 'avgspeed desc', 10, 10)
-    commutesplitbucket('commutes by depart time', 'timebucket', drivetable, linetable, clustertable, 5)
+    commutesplitbucket('commutes by depart time', 'timebucket', drivetable, linetable, clustertable, 0)
     commutesplitbucket('commutes by week', 'weekbucket', drivetable, linetable, clustertable, 3)
     commutesplitbucket('commutes by month', 'monthbucket', drivetable, linetable, clustertable, 0)
     commutesplitbucket('commutes by weekday', 'weekdaybucket', drivetable, linetable, clustertable, 0)
@@ -518,48 +531,100 @@ def buildreports():
     clusterspeedbucket('top speeds', allfolders, drivetable, linetable, clustertable, 'maxspeed')
     clusterspeedbucket('slow speeds', allfolders, drivetable, linetable, clustertable, 'minspeed')
 
-    kmlname = "clusters"
-    kmloutput = simplekml.Kml(visibility=0)
-    print 'calculating', kmlname
-    drives = {}
-    for drivetype in allfolders:
-        drives[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
+    #kmlname = "clusters"
+    #kmloutput = simplekml.Kml(visibility=0)
+    #print 'calculating', kmlname
+    #drives = {}
+    #for drivetype in allfolders:
+        #drives[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
 
-    countbuckets = {}
-    for cluster in clustertable.find(order_by='-count'):
-        clusterfolder = drives[cluster['type']].newfolder(name='%s: %s' % (cluster['count'], cluster['uuid']), visibility=0)
-        clusterspeedfolder = clusterfolder.newfolder(name='speed labels', visibility=0)
-        randomcolor = random.randint(1, 90)
-        for line in linetable.find(cluster=cluster['uuid']):
-            coords = [(x, y) for x, y in simplejson.loads(line['coords'])]
-            makespeedline(clusterfolder, clusterspeedfolder, line['name'], coords, randomcolor, line['length'])
+    #countbuckets = {}
+    #for cluster in clustertable.find(order_by='-count'):
+        #clusterfolder = drives[cluster['type']].newfolder(name='%s: %s' % (cluster['count'], cluster['uuid']), visibility=0)
+        #clusterspeedfolder = clusterfolder.newfolder(name='speed labels', visibility=0)
+        #randomcolor = random.randint(1, 90)
+        #for line in linetable.find(cluster=cluster['uuid']):
+            #coords = [(x, y) for x, y in simplejson.loads(line['coords'])]
+            #makespeedline(clusterfolder, clusterspeedfolder, line['name'], coords, randomcolor, line['length'])
 
-    print 'writing', kmlname
-    kmloutput.save('%s.kml' % kmlname)
+    #print 'writing', kmlname
+    #kmloutput.save('%s.kml' % kmlname)
 
-    #plotting.output_file("commutes.html", title="candlestick.py example",
-                #js="relative", css="relative")
-    #plotting.hold()
+    plotting.output_file("commutes.html", title="commute graphs", js='relative',css='relative')
+    plotting.hold()
 
-    #for drivetype in commutes:
-        #linedata = collections.defaultdict(list)
-        #for drive in db.query('select * from drives where type="%s" order by date(startdate) asc' % drivetype):
-            #if drive['triptime'] > 100:
-                #continue
-            #linedata['date'].append(datetime.datetime.strptime(drive['startdate'], '%Y-%m-%d %H:%M:%S.%f').strftime('%Y-%m-%d'))
-            #linedata['triptime'].append(drive['triptime'])
+    def driveplot(drivetype, field, fieldlimit=None):
+        linedata = collections.defaultdict(list)
+        for drive in db.query('select * from drives where type="%s" order by date(startdate) asc' % drivetype):
+            if fieldlimit:
+                if fieldlimit[0] > int(drive[field]) or int(drive[field]) > fieldlimit[1]:
+                    continue
+            linedata['date'].append(datetime.datetime.strptime(drive['startdate'], '%Y-%m-%d %H:%M:%S.%f'))
+            linedata[field].append(drive[field])
+        return np.array([time.mktime(d.timetuple()) for d in linedata['date']])*1000, np.array(linedata[field])
 
-        #print np.array(linedata['date'], dtype='datetime64[M]').astype('int')
-        #plotting.line(np.array(linedata['date'], dtype='datetime64').astype('int')*100000000, linedata['triptime'],
-             #x_axis_type="datetime", color='#A6CEE3', tools="pan,zoom,resize")
+    colors = []
+    for drivetype in commutes:
+        x, y = driveplot(drivetype, 'triptime', (0,100))
+        plotting.scatter(x, y, x_axis_type="datetime", color='#A6CEE3',
+                      tools="pan,zoom,resize", fill_alpha=0.2, radius=5, width=1100, height=700,
+                      legend="trips")
 
-        #plotting.curplot().title = "%s commute historical triptime" % drivetype
-        #plotting.xaxis().major_label_orientation = math.pi/4
-        #plotting.grid().grid_line_alpha=0.3
+        for mavg, color in [(7,'#B0E63C'),(30,'#D65C5C')]:
+            plotting.line(x, movingaverage(y, mavg), x_axis_type="datetime", color=color,
+                          tools="pan,zoom,resize", line_width=2, width=1100, height=700,
+                          legend="%s-day average" % mavg)
 
-        #plotting.figure()
+        plotting.curplot().title = "%s commute historical triptime" % drivetype
+        plotting.xaxis().major_label_orientation = math.pi/4
+        plotting.grid().grid_line_alpha=0.3
 
-    #plotting.show()  # open a browser
+        plotting.figure()
+
+    commutecolor = {
+        "morning": "#E3A30E",
+        "evening": "#A6CEE3",
+    }
+    for drivetype in commutes:
+        x, y = driveplot(drivetype, 'triptime', (0,100))
+
+        plotting.line(x, movingaverage(y, 30), x_axis_type="datetime", color=commutecolor[drivetype],
+                      tools="pan,zoom,resize", line_width=2, width=1100, height=700,
+                      legend=drivetype)
+
+        plotting.curplot().title = "%s commute historical triptime" % drivetype
+        plotting.xaxis().major_label_orientation = math.pi/4
+        plotting.grid().grid_line_alpha=0.3
+
+    plotting.figure()
+
+    field = 'triptime'
+    fieldlimit = (0,100)
+    for drivetype in commutes:
+        linedata = []
+        for drive in db.query('select * from drives where type="%s" order by timebucket asc' % drivetype):
+            if fieldlimit:
+                if fieldlimit[0] > int(drive[field]) or int(drive[field]) > fieldlimit[1]:
+                    continue
+            line = list(db.query('select * from lines where drive="%s" order by date(date) asc limit 1' % drive['id']))[0]
+            linedt = datetime.datetime.strptime(line['date'], '%Y-%m-%d %H:%M:%S.%f')
+            drivedt = datetime.datetime.strptime(drive['startdate'], '%Y-%m-%d %H:%M:%S.%f')
+            linedata.append((datetime.datetime(2013,1,1,drivedt.hour,linedt.minute,linedt.second), drive[field], linedt, drivedt))
+
+        x = np.array([time.mktime(d[0].timetuple()) for d in sorted(linedata, key=lambda x:x[0])])*1000-18000000
+        y = np.array([d[1] for d in sorted(linedata, key=lambda x:x[0])])
+
+        plotting.scatter(x, y, x_axis_type="datetime", color=commutecolor[drivetype],
+                         tools="pan,zoom,resize", fill_alpha=0.2, radius=5, width=1100, height=700,
+                         legend=drivetype)
+
+        plotting.curplot().title = "%s by depart time" % drivetype
+        plotting.xaxis().major_label_orientation = math.pi/4
+        plotting.grid().grid_line_alpha=0.3
+
+        plotting.figure()
+
+    plotting.show()  # open a browser
 
 
 if __name__ == '__main__':

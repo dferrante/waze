@@ -10,19 +10,18 @@ import os
 import random
 import re
 import requests
-from rpy2.robjects.packages import importr
-import rpy2.robjects as robjects
 import simplekml
 import simplejson
 import string
 import sys
 import time
+import pytz
 import uuid
 from gnosis.xml.objectify import make_instance
+from tqdm import *
 
 db = dataset.connect('sqlite:///waze.db')
-#db = dataset.connect('sqlite:///:memory:')
-pclib = importr("princurve")
+db = dataset.connect('sqlite:///:memory:')
 
 #configurables
 outfile = 'drives.kml' # where final kml is written
@@ -40,13 +39,20 @@ top_and_bottom_ranking_limit = 10
 recent_drives_count = 20
 
 #waze API urls
+get_csrf_url = "https://www.waze.com/login/get"
 session_url = "https://www.waze.com/login/create"
 sessiondata_url = "https://www.waze.com/Descartes-live/app/Archive/Session"
 sessionlist_url = "https://www.waze.com/Descartes-live/app/Archive/List"
 
 def export(username, password):
     # login
-    req = requests.post(session_url, data={'user_id': username, 'password': password})
+    req = requests.get(get_csrf_url)
+    csrfdict = dict(req.cookies)
+    csrfdict['editor_env'] = 'usa'
+    headers = {'X-CSRF-Token': csrfdict['_csrf_token']}
+
+    req = requests.post(session_url, data={'user_id': username, 'password': password}, cookies=csrfdict, headers=headers)
+
     try:
         authdict = dict(req.cookies)
     except:
@@ -54,20 +60,16 @@ def export(username, password):
         sys.exit(255)
 
     # get sessions
-    print 'getting sessions'
     sessionlist = []
-    offset = 0
-    sessions = requests.get(sessionlist_url, params={'count': 50, 'offset': offset}, cookies=authdict).json()['archives']['objects']
-    while sessions:
+    for offset in range(0, 500, 50):
+        json = requests.get(sessionlist_url, params={'count': 50, 'offset': offset}, cookies=authdict).json()
+        sessions = json['archives']['objects']
+        if not sessions:
+            break
         sessionlist += [x for x in sessions]
-        offset += 50
-        sessions = requests.get(sessionlist_url, params={'count': 50, 'offset': offset}, cookies=authdict).json()['archives']['objects']
-    print 'got %s sessions' % len(sessionlist)
-    print 'done'
 
-    print 'getting gml files'
-    c = 1
-    for session in sessionlist:
+    files = []
+    for session in tqdm(sessionlist, 'converting to kml', leave=True):
         try:
             starttime = datetime.datetime.fromtimestamp(session['startTime']/1000)
             endtime = datetime.datetime.fromtimestamp(session['endTime']/1000)
@@ -86,21 +88,19 @@ def export(username, password):
                 if 'code' in data.json() and data.json()['code'] == 101:
                     print 'the rest are invalid, stopping scan'
                     return
-                else:
-                    print 'error:', data.url, data.content
                 continue
             f = open(gmlfile, 'w')
             f.write(gml)
             f.close()
             commands.getstatusoutput('ogr2ogr -f "KML" %s %s' % (kmlfile, gmlfile))
-            if removegmlfiles:
-                os.remove(gmlfile)
             os.remove(gfsfile)
-            print 'wrote %s (%s/%s)' % (gmlfile, c, len(sessionlist))
-            c += 1
+            files.append(gmlfile)
+    print
+    for fn in sorted(files):
+        print fn[5:]
 
 
-def colorspeed(speed, maxspeed=90.0):
+def colorspeed(speed, maxspeed=90.0, rgb=False):
     if speed == -1: # special case
         return '66000000'
 
@@ -116,7 +116,10 @@ def colorspeed(speed, maxspeed=90.0):
         255*(1-(speed/midpoint)) if speed <= midpoint else 0,
     )
     argb = tuple(map(limiter, argb))
-    color = '%02x%02x%02x%02x' % argb
+    if rgb:
+        color = '%02x%02x%02x' % (argb[3], argb[2], argb[1])
+    else:
+        color = '%02x%02x%02x%02x' % argb
     return color
 
 def datadict(data):
@@ -147,38 +150,6 @@ def haversine(lon1, lat1, lon2, lat2):
     c = 2 * math.asin(math.sqrt(a))
     m = 6367 * c * 1000
     return m
-
-def parsekmlname(name):
-    try:
-        sd = map(int,name[:-4].split('-')[:3])
-        st = map(int,name[:-4].split('-')[3].split(':'))
-        ed = map(int,name[:-4].split('-')[4:7])
-        et = map(int,name[:-4].split('-')[7].split(':'))
-        distance = float(name[:-4].split('-')[-1][:-2])
-        startdate = datetime.datetime(2000+sd[0], sd[1], sd[2], st[0], st[1])
-        enddate = datetime.datetime(2000+ed[0], ed[1], ed[2], et[0], et[1])
-        triptime = int((enddate-startdate).seconds/60.0)
-        avgspeed = round(distance/(triptime/60.0),1)
-        weekbucketname = startdate.strftime('%Y-%W')
-        weekdaybucketname = startdate.strftime('(%w) %A')
-        monthbucketname = startdate.strftime('%Y-%m')
-        timebucketname = '%s:%02d%s' % (int(startdate.strftime('%I')),
-                                        math.floor(startdate.minute/60.0*(60/timeslices))*timeslices,
-                                        startdate.strftime('%p').lower())
-
-        fmtname = '%s-%s (%smi/%smin/%smph)' % (startdate.strftime('%m/%d %I:%M%p'), enddate.strftime('%I:%M%p'), distance, triptime, avgspeed)
-        self = {'filename': name, 'distance': distance, 'startdate': startdate,
-                'enddate': enddate, 'avgspeed': avgspeed, 'fmtname': fmtname, 'triptime': triptime,
-                'weekbucket': weekbucketname, 'weekdaybucket': weekdaybucketname,
-                'monthbucket': monthbucketname, 'timebucket': timebucketname,
-                'distancebucket': str(distance),}
-
-        for folder, rule in kmlfolderrules:
-            if rule(self):
-                self['type'] = folder
-                return self
-    except:
-        return False
 
 def commutesplitbucket(kmlname, drivebucket, drivetable, linetable, clustertable, linelimit):
     kmloutput = simplekml.Kml(visibility=0)
@@ -221,7 +192,7 @@ def commutesplitbucket(kmlname, drivebucket, drivetable, linetable, clustertable
         avgdrivespeed = clustertable.find_one(uuid=cmatch, type='all')['speed']
         if avgdrivespeed > 0:
             speeddiff = int(avgspeed-avgdrivespeed)
-            avgavgspeed = -1 if speeddiff == 0 else avgspeed/float(avgdrivespeed)*55+15 if speeddiff > 0 else avgspeed/float(avgdrivespeed)*55-15
+            avgavgspeed = -1 if speeddiff >= -3 and  speeddiff <= 3 else avgspeed/float(avgdrivespeed)*55+15 if speeddiff > 0 else avgspeed/float(avgdrivespeed)*55-15
             makespeedline(averages[drivetype+bucket+'-avg'], averages[drivetype+bucket+'-avgspeed'], display_name, coords, avgavgspeed, length, speeddiff)
 
     print 'writing', kmlname
@@ -261,12 +232,13 @@ def drivesplitbucket(kmlname, drivetypes, drivetable, linetable, clustertable, s
                 avgdrivespeed = clustertable.find_one(uuid=line['cluster'], type='all')['speed']
                 if avgdrivespeed > 0:
                     speeddiff = int(line['speed']-avgdrivespeed)
-                    if speeddiff == 0:
-                        avgavgspeed, speedlabel = -1, ""
-                    elif speeddiff > 0:
+                    if speeddiff > 3:
                         avgavgspeed, speedlabel = line['speed']/float(avgdrivespeed)*55+15, speeddiff
-                    else:
+                    elif speeddiff < -3:
                         avgavgspeed, speedlabel = line['speed']/float(avgdrivespeed)*55-15, speeddiff
+                    else:
+                        avgavgspeed, speedlabel = -1, ""
+
 
                     makespeedline(avgfolder, avgspfolder, display_name, coords, avgavgspeed, line['length'], speedlabel)
                 prevlinename = line['name']
@@ -376,6 +348,27 @@ def namecluster(line, clusters):
 
     return cmatch
 
+def clusterreport():
+    pass
+    #kmlname = "clusters"
+    #kmloutput = simplekml.Kml(visibility=0)
+    #print 'calculating', kmlname
+    #drives = {}
+    #for drivetype in allfolders:
+        #drives[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
+
+    #countbuckets = {}
+    #for cluster in clustertable.find(order_by='-count'):
+        #clusterfolder = drives[cluster['type']].newfolder(name='%s: %s' % (cluster['count'], cluster['uuid']), visibility=0)
+        #clusterspeedfolder = clusterfolder.newfolder(name='speed labels', visibility=0)
+        #randomcolor = random.randint(1, 90)
+        #for line in linetable.find(cluster=cluster['uuid']):
+            #coords = [(x, y) for x, y in simplejson.loads(line['coords'])]
+            #makespeedline(clusterfolder, clusterspeedfolder, line['name'], coords, randomcolor, line['length'])
+
+    #print 'writing', kmlname
+    #kmloutput.save('%s.kml' % kmlname)
+
 def principalcurve(coords):
     try:
         array = [y for x in sorted(coords, key=lambda x: x[0]) for y in x]
@@ -398,22 +391,21 @@ def movingaverage(a, n):
     return ret
 
 def buildreports():
-    print 'starting report'
     drivetable = db['drives']
     linetable = db['lines']
+    linecache = []
 
     clustertable = db['clusters']
+    driveclustertable = db['driveclustertable']
     clusters = {}
-    #for cluster in clustertable.all():
-        #clusters[cluster['uuid']] = cluster
 
     new = False
-    for kfile in [x for x in sorted(os.listdir('./data')) if '.kml' in x]:
+    for kfile in tqdm([x for x in sorted(os.listdir('./data')) if '.kml' in x][-20:], 'parsing kml', leave=True):
         if not drivetable.find_one(filename=kfile):
-            drive = parsekmlname(kfile)
-
-            if not drive:
-                continue
+            drive = {'filename': kfile}
+            drive['distance'] = float(drive['filename'][:-4].split('-')[-1][:-2])
+            startdate = datetime.date(*map(int,drive['filename'][:-4].split('-')[:3]))
+            startdate = startdate.replace(year=startdate.year+2000)
 
             if drive['distance'] < 1:
                 continue
@@ -426,9 +418,7 @@ def buildreports():
             except:
                 continue
 
-            driveid = drivetable.insert(drive)
             new = True
-            print 'parsing %s' % kfile
 
             prevline = 'start'
             linelist = []
@@ -447,8 +437,6 @@ def buildreports():
                     continue
 
                 line = {
-                    'drive': driveid,
-                    'type': drive['type'],
                     'prevline': prevline,
                     'speed': speed,
                     'length': round(int(data['length'])*0.000621371,1),
@@ -456,28 +444,101 @@ def buildreports():
 
                 line['coords'] = simplejson.dumps([tuple(map(float, x.split(','))) for x in l.LineString.coordinates.PCDATA.split()])
 
-                name = data['Name'].strip(',') if 'Name' in data and data['Name'] else ''
-                line['name'] = string.replace(string.replace(name, ',', ', ').strip(), '  ', ' ')
+                if hasattr(l, 'name') and getattr(l.name, 'PCDATA'):
+                    name = l.name.PCDATA
+                elif 'Name' in data and data['Name']:
+                    name = data['Name']
+                else:
+                    name = ''
+
+                name = string.replace(string.replace(name.strip(','), ',', ', ').strip(), '  ', ' ')
+
+                line['name'] = name
                 line['fullname'] = '%s - %s' % (prevline, name)
 
-                linetime = map(int, [x for x in data['start_time'].split(':')])
-                if linetime[0] < 0:
-                    linetime[0] += 24
-                line['date'] = datetime.datetime(drive['startdate'].year, drive['startdate'].month, drive['startdate'].day, linetime[0], linetime[1], linetime[2])
-                line['date'] += datetime.timedelta(hours=-5)
-                if line['date'] < drive['startdate']:
-                    line['date'] += datetime.timedelta(days=1)
+                linetime = map(int, data['start_time'].split(':'))
+                date = pytz.utc.localize(datetime.datetime(startdate.year, startdate.month, startdate.day,
+                                                           linetime[0], linetime[1], linetime[2]))
 
-                line['cluster'] = repr(namecluster(line, clusters))
+                linetime = map(int, data['end_time'].split(':'))
+                enddate = pytz.utc.localize(datetime.datetime(startdate.year, startdate.month, startdate.day,
+                                                           linetime[0], linetime[1], linetime[2]))
+
+
+                timezone = pytz.timezone('US/Eastern')
+                date = date.astimezone(timezone)
+                enddate = enddate.astimezone(timezone)
+
+                if prevline == 'start':
+                    startdate = date
+
+                if date < startdate:
+                    date += datetime.timedelta(days=1)
+
+                line['date'] = date
                 linelist.append(line)
                 prevline = line['name']
 
-            linetable.insert_many(linelist)
+            drive['startdate'] = startdate.replace(tzinfo=None)
+            drive['enddate'] = enddate.replace(tzinfo=None)
+            drive['triptime'] = int((drive['enddate']-drive['startdate']).seconds/60.0)
+            drive['avgspeed'] = round(drive['distance']/(drive['triptime']/60.0),1)
+            drive['weekbucket'] = drive['startdate'].strftime('%Y-%W')
+            drive['weekdaybucket'] = drive['startdate'].strftime('(%w) %A')
+            drive['monthbucket'] = drive['startdate'].strftime('%Y-%m')
+            drive['timebucket'] = '%s:%02d%s' % (int(drive['startdate'].strftime('%I')),
+                                            math.floor(drive['startdate'].minute/60.0*(60/timeslices))*timeslices,
+                                            drive['startdate'].strftime('%p').lower())
+            drive['fmtname'] = '%s-%s (%smi/%smin/%smph)' % (drive['startdate'].strftime('%m/%d %I:%M%p'),
+                                                             drive['enddate'].strftime('%I:%M%p'),
+                                                             drive['distance'], drive['triptime'], drive['avgspeed'])
 
+            def namecheck(s, start, end):
+                for l in linelist[start:end]:
+                    truth = s.lower() in l['name'].lower()
+                    if truth:
+                        return True
+                return False
+
+            if drive['startdate'] >= datetime.datetime(2013, 8, 5) and \
+               drive['startdate'].weekday() < 5 and \
+               drive['startdate'].hour >= 7 and \
+               drive['startdate'].hour <= 10 and \
+               drive['distance'] >= 47.3 and \
+               drive['distance'] <= 57 and \
+               namecheck('Studer', 0, 1) and \
+               namecheck('CR-612', -7, None):
+                drivetype = 'morning'
+            elif drive['startdate'] >= datetime.datetime(2013, 8, 5) and \
+                 drive['startdate'].weekday() < 5 and \
+                 drive['startdate'].hour >= 16 and \
+                 drive['startdate'].hour <= 19 and \
+                 drive['distance'] >= 47.3 and \
+                 drive['distance'] <= 57 and \
+                 namecheck('Studer', -1, None) and \
+                 namecheck('CR-612', 0, 7):
+                drivetype = 'evening'
+            else:
+                drivetype = 'other'
+
+            drive['type'] = drivetype
+            driveid = drivetable.insert(drive)
+            for line in linelist:
+                line['drive'] = driveid
+                line['type'] = drivetype
+                line['cluster'] = repr(namecluster(line, clusters))
+
+            linecache.extend(linelist)
+
+
+    print
+    print 'loading line table'
+    linetable.insert_many(linecache)
+
+    print 'clustering'
     if new:
-        print 'adding cluster to db'
         clusterrows = []
-        for cname, cluster in clusters.iteritems():
+        for cname, cluster in clusters.items():
             for drivetype in cluster['speeds'].keys():
                 speedarray = np.array(cluster['speeds'][drivetype])
                 clusterrows.append({
@@ -513,42 +574,21 @@ def buildreports():
         clustertable.delete()
         clustertable.insert_many(clusterrows)
 
-
     print 'building kmls'
     allfolders = [folder for folder, rule in kmlfolderrules] + ['all',]
 
-
     drivesplitbucket('drives', allfolders, drivetable, linetable, clustertable, 'date(startdate) desc', recent_drives_count)
-    drivesplitbucket('drives by length', allfolders, drivetable, linetable, clustertable, 'distance desc', 10)
+    #drivesplitbucket('drives by length', allfolders, drivetable, linetable, clustertable, 'distance desc', 10)
     drivesplitbucket('drives by avg speed', allfolders, drivetable, linetable, clustertable, 'avgspeed desc', 10, 10)
     drivesplitbucket('drives by total time', allfolders, drivetable, linetable, clustertable, 'avgspeed desc', 10, 10)
     commutesplitbucket('commutes by depart time', 'timebucket', drivetable, linetable, clustertable, 0)
     commutesplitbucket('commutes by week', 'weekbucket', drivetable, linetable, clustertable, 3)
     commutesplitbucket('commutes by month', 'monthbucket', drivetable, linetable, clustertable, 0)
     commutesplitbucket('commutes by weekday', 'weekdaybucket', drivetable, linetable, clustertable, 0)
-    #commutesplitbucket('commutes by distance', 'distancebucket', drivetable, linetable, clustertable)
+    commutesplitbucket('commutes by distance', 'distancebucket', drivetable, linetable, clustertable, 0)
     clusterspeedbucket('averages', allfolders, drivetable, linetable, clustertable, 'speed')
     clusterspeedbucket('top speeds', allfolders, drivetable, linetable, clustertable, 'maxspeed')
     clusterspeedbucket('slow speeds', allfolders, drivetable, linetable, clustertable, 'minspeed')
-
-    #kmlname = "clusters"
-    #kmloutput = simplekml.Kml(visibility=0)
-    #print 'calculating', kmlname
-    #drives = {}
-    #for drivetype in allfolders:
-        #drives[drivetype] = kmloutput.newfolder(name=drivetype, visibility=0)
-
-    #countbuckets = {}
-    #for cluster in clustertable.find(order_by='-count'):
-        #clusterfolder = drives[cluster['type']].newfolder(name='%s: %s' % (cluster['count'], cluster['uuid']), visibility=0)
-        #clusterspeedfolder = clusterfolder.newfolder(name='speed labels', visibility=0)
-        #randomcolor = random.randint(1, 90)
-        #for line in linetable.find(cluster=cluster['uuid']):
-            #coords = [(x, y) for x, y in simplejson.loads(line['coords'])]
-            #makespeedline(clusterfolder, clusterspeedfolder, line['name'], coords, randomcolor, line['length'])
-
-    #print 'writing', kmlname
-    #kmloutput.save('%s.kml' % kmlname)
 
     plotting.output_file("commutes.html", title="commute graphs", js='relative',css='relative')
     plotting.hold()
@@ -575,7 +615,7 @@ def buildreports():
                           tools="pan,zoom,resize", line_width=2, width=1100, height=700,
                           legend="%s-day average" % mavg)
 
-        plotting.curplot().title = "%s commute historical triptime" % drivetype
+        plotting.curplot().title = "%s commute trip time" % drivetype
         plotting.xaxis().major_label_orientation = math.pi/4
         plotting.grid().grid_line_alpha=0.3
 
@@ -592,7 +632,7 @@ def buildreports():
                       tools="pan,zoom,resize", line_width=2, width=1100, height=700,
                       legend=drivetype)
 
-        plotting.curplot().title = "%s commute historical triptime" % drivetype
+        plotting.curplot().title = "%s commute 30day moving average" % drivetype
         plotting.xaxis().major_label_orientation = math.pi/4
         plotting.grid().grid_line_alpha=0.3
 
@@ -618,7 +658,7 @@ def buildreports():
                          tools="pan,zoom,resize", fill_alpha=0.2, radius=5, width=1100, height=700,
                          legend=drivetype)
 
-        plotting.curplot().title = "%s by depart time" % drivetype
+        plotting.curplot().title = "%s commute time by depart time" % drivetype
         plotting.xaxis().major_label_orientation = math.pi/4
         plotting.grid().grid_line_alpha=0.3
 

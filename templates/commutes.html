@@ -1,0 +1,147 @@
+<html>
+<head>
+<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
+<script src="http://code.highcharts.com/highcharts.src.js"></script>
+<script src="http://code.highcharts.com/themes/dark-unica.js"></script>
+</head>
+
+<body style='background-color: #333;'>
+<div id="morning" style="height: 600px; min-width: 310px"></div>
+<div id="evening" style="height: 600px; min-width: 310px"></div>
+<div id="depart_time" style="height: 600px; min-width: 310px"></div>
+{% for dg in drive_graphs %}
+    <div id="drive-{{ dg.drive.id }}" style="height: 600px; min-width: 310px"></div>
+{% endfor %}
+
+<script type="text/javascript">
+
+function commute_graph(target, title_text, json) {
+    var seriesOptions = JSON.parse(json);
+
+    $(target).highcharts({
+        chart: {
+            zoomType: 'xy'
+        },
+        title: {
+            text: title_text
+        },
+        xAxis: {
+            type: 'datetime',
+            dateTimeLabelFormats: {
+                month: '%e. %b',
+                year: '%Y'
+            },
+            title: {
+                text: 'Date'
+            }
+        },
+        yAxis: {
+            title: {
+                text: 'mins'
+            },
+        },
+        tooltip: {
+            headerFormat: '<b>{series.name}</b><br>',
+            pointFormat: '{point.x:%m/%d %H:%M}: {point.name}'
+        },
+
+        series: seriesOptions
+    });
+}
+
+function drive_graph(target, title, categories, json) {
+    var seriesOptions = JSON.parse(json);
+    var categories = JSON.parse(categories);
+
+    $(target).highcharts({
+        chart: {
+            type: 'column'
+        },
+
+        title: {
+            text: title
+        },
+
+        xAxis: {
+            categories: categories,
+        },
+
+        credits: {
+            enabled: false
+        },
+
+        yAxis: {
+            allowDecimals: false,
+            title: {text: 'Miles per Hour'},
+            stackLabels: {
+                enabled: true,
+                style: {
+                    fontWeight: 'bold',
+                    color: (Highcharts.theme && Highcharts.theme.textColor) || 'gray'
+                },
+            }
+        },
+
+        tooltip: {
+            formatter: function() {
+                return this.point.name;
+            }
+        },
+
+        plotOptions: {
+            column: {
+                stacking: 'normal',
+            }
+        },
+
+        series: seriesOptions
+    });
+}
+
+$(function() {
+    commute_graph('#morning', 'Morning Commute', '{{ morning_data|safe }}');
+    commute_graph('#evening', 'Evening Commute', '{{ evening_data|safe }}');
+
+
+    {% for dg in drive_graphs %}
+        drive_graph('#drive-{{ dg.drive.id }}', '{{ dg.drive.type|title }} Drive for {{ dg.drive.fmtname }}', '{{ dg.categories|safe }}', '{{ dg.data|safe }}');
+    {% endfor %}
+
+
+    $('#depart_time').highcharts({
+        chart: {
+            zoomType: 'xy'
+        },
+        title: {
+            text: 'Depart Times'
+        },
+        xAxis: {
+            type: 'datetime',
+            dateTimeLabelFormats: {
+                month: '%e. %b',
+                year: '%Y'
+            },
+            title: {
+                text: 'Date'
+            }
+        },
+        yAxis: {
+            title: {
+                text: 'mins'
+            },
+        },
+        tooltip: {
+            headerFormat: '<b>{series.name}</b><br>',
+            pointFormat: '{point.x:%H:%M}: {point.name}'
+        },
+
+        series: JSON.parse('{{ depart_time_data|safe }}')
+    });
+
+    $('#container').highcharts({
+    });
+
+});
+</script>
+</body>
+</html>

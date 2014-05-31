@@ -1,29 +1,83 @@
 <html>
 <head>
+<title>Waze Data</title>
 <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
+<script src="http://ajax.googleapis.com/ajax/libs/jqueryui/1.10.4/jquery-ui.min.js"></script>
+<link rel="stylesheet" href="http://code.jquery.com/ui/1.10.4/themes/dark-hive/jquery-ui.css" />
 <script src="http://code.highcharts.com/highcharts.src.js"></script>
 <script src="http://code.highcharts.com/themes/dark-unica.js"></script>
+<script>
+</script>
 </head>
 
 <body style='background-color: #333;'>
-<div id="morning" style="height: 600px; min-width: 310px"></div>
-<div id="evening" style="height: 600px; min-width: 310px"></div>
-<div id="depart_time" style="height: 600px; min-width: 310px"></div>
-{% for dg in drive_graphs %}
-    <div id="drive-{{ dg.drive.id }}" style="height: 600px; min-width: 310px"></div>
-{% endfor %}
+<div id="tabs">
+    <ul>
+      <li><a href="#tabs-1">Commute Averages</a></li>
+      <li><a href="#tabs-2">Depart Time Splits</a></li>
+      <li><a href="#tabs-3">Last 20 Drives</a></li>
+      <li><a href="#tabs-4">Fastest Commutes</a></li>
+      <li><a href="#tabs-5">Slowest Commutes</a></li>
+      <li><a href="#tabs-6">Commutes By Week</a></li>
+      <li><a href="#tabs-7">Commutes By Month</a></li>
+      <li><a href="#tabs-8">Commutes By Weekday</a></li>
+    </ul>
+
+    <div id="tabs-1">
+        <div id="morning" style="height: 600px; min-width: 310px"></div>
+        <div id="evening" style="height: 600px; min-width: 310px"></div>
+    </div>
+
+    <div id="tabs-2">
+        <div id="depart_time" style="height: 600px; min-width: 310px"></div>
+    </div>
+
+    <div id="tabs-3">
+        {% for dg in drive_graphs %}
+            <div id="drive-{{ dg.drive.id }}-{{ forloop.counter }}" style="height: 600px; min-width: 310px"></div>
+        {% endfor %}
+    </div>
+
+    <div id="tabs-4">
+        {% for dg in fastest_commutes %}
+            <div id="drive-{{ dg.drive.id }}-{{ forloop.counter }}" style="height: 600px; min-width: 310px"></div>
+        {% endfor %}
+    </div>
+
+    <div id="tabs-5">
+        {% for dg in slowest_commutes %}
+            <div id="drive-{{ dg.drive.id }}-{{ forloop.counter }}" style="height: 600px; min-width: 310px"></div>
+        {% endfor %}
+    </div>
+
+    <div id="tabs-6">
+        <div id="weekbucket-morning" style="height: 600px; min-width: 310px"></div>
+        <div id="weekbucket-evening" style="height: 600px; min-width: 310px"></div>
+    </div>
+
+    <div id="tabs-7">
+        <div id="monthbucket-morning" style="height: 600px; min-width: 310px"></div>
+        <div id="monthbucket-evening" style="height: 600px; min-width: 310px"></div>
+    </div>
+
+    <div id="tabs-8">
+        <div id="weekdaybucket-morning" style="height: 600px; min-width: 310px"></div>
+        <div id="weekdaybucket-evening" style="height: 600px; min-width: 310px"></div>
+    </div>
+</div>
 
 <script type="text/javascript">
 
-function commute_graph(target, title_text, json) {
+function commute_graph(target, title, json) {
     var seriesOptions = JSON.parse(json);
 
     $(target).highcharts({
         chart: {
-            zoomType: 'xy'
+            zoomType: 'xy',
+            width: $('#tabs-1').width(),
         },
         title: {
-            text: title_text
+            text: title
         },
         xAxis: {
             type: 'datetime',
@@ -49,17 +103,22 @@ function commute_graph(target, title_text, json) {
     });
 }
 
-function drive_graph(target, title, categories, json) {
+function drive_graph(target, title, subtitle, categories, json) {
     var seriesOptions = JSON.parse(json);
     var categories = JSON.parse(categories);
 
     $(target).highcharts({
         chart: {
-            type: 'column'
+            type: 'column',
+            width: $('#tabs-1').width(),
         },
 
         title: {
             text: title
+        },
+
+        subtitle: {
+            text: subtitle
         },
 
         xAxis: {
@@ -72,6 +131,7 @@ function drive_graph(target, title, categories, json) {
 
         yAxis: {
             allowDecimals: false,
+            max: 100,
             title: {text: 'Miles per Hour'},
             stackLabels: {
                 enabled: true,
@@ -91,6 +151,10 @@ function drive_graph(target, title, categories, json) {
         plotOptions: {
             column: {
                 stacking: 'normal',
+                dataLabels: {
+                    enabled: true,
+                    color: '#000000',
+                }
             }
         },
 
@@ -98,22 +162,70 @@ function drive_graph(target, title, categories, json) {
     });
 }
 
-$(function() {
-    commute_graph('#morning', 'Morning Commute', '{{ morning_data|safe }}');
-    commute_graph('#evening', 'Evening Commute', '{{ evening_data|safe }}');
+function bucket_graph(target, title, categories, json) {
+    var seriesOptions = JSON.parse(json);
+    var categories = JSON.parse(categories);
 
-
-    {% for dg in drive_graphs %}
-        drive_graph('#drive-{{ dg.drive.id }}', '{{ dg.drive.type|title }} Drive for {{ dg.drive.fmtname }}', '{{ dg.categories|safe }}', '{{ dg.data|safe }}');
-    {% endfor %}
-
-
-    $('#depart_time').highcharts({
+    $(target).highcharts({
         chart: {
-            zoomType: 'xy'
+            type: 'column',
+            width: $('#tabs-1').width(),
+        },
+
+        title: {
+            text: title
+        },
+        xAxis: {
+            categories: categories,
+        },
+
+        credits: {
+            enabled: false
+        },
+
+        yAxis: {
+            allowDecimals: false,
+            max: 100,
+            title: {text: 'Minutes'},
+            stackLabels: {
+                enabled: true,
+                style: {
+                    fontWeight: 'bold',
+                    color: (Highcharts.theme && Highcharts.theme.textColor) || 'gray'
+                },
+            }
+        },
+
+        tooltip: {
+            formatter: function() {
+                return this.point.name;
+            }
+        },
+
+        plotOptions: {
+            column: {
+                stacking: 'normal',
+                dataLabels: {
+                    enabled: true,
+                    color: '#000000',
+                }
+            }
+        },
+
+        series: seriesOptions
+    });
+}
+
+function depart_time_split(target, title, json){
+    var seriesOptions = JSON.parse(json);
+
+    $(target).highcharts({
+        chart: {
+            zoomType: 'xy',
+            width: $('#tabs-1').width(),
         },
         title: {
-            text: 'Depart Times'
+            text: title
         },
         xAxis: {
             type: 'datetime',
@@ -135,11 +247,33 @@ $(function() {
             pointFormat: '{point.x:%H:%M}: {point.name}'
         },
 
-        series: JSON.parse('{{ depart_time_data|safe }}')
+        series: seriesOptions
     });
+}
 
-    $('#container').highcharts({
-    });
+$(function() {
+    $("#tabs").tabs();
+
+    commute_graph('#morning', 'Morning Commute', '{{ morning_data|safe }}');
+    commute_graph('#evening', 'Evening Commute', '{{ evening_data|safe }}');
+
+    depart_time_split('#depart_time', 'Depart Times', '{{ depart_time_data|safe }}')
+
+    {% for dg in drive_graphs %}
+        drive_graph('#drive-{{ dg.drive.id }}-{{ forloop.counter }}', '{{ dg.drive.fmtname }}', '{{ dg.drive.endpoints }} ({{ dg.drive.type }})', '{{ dg.categories|safe }}', '{{ dg.data|safe }}');
+    {% endfor %}
+
+    {% for dg in fastest_commutes %}
+        drive_graph('#drive-{{ dg.drive.id }}-{{ forloop.counter }}', '{{ dg.drive.fmtname }}', '{{ dg.drive.endpoints }} ({{ dg.drive.type }})', '{{ dg.categories|safe }}', '{{ dg.data|safe }}');
+    {% endfor %}
+
+    {% for dg in slowest_commutes %}
+        drive_graph('#drive-{{ dg.drive.id }}-{{ forloop.counter }}', '{{ dg.drive.fmtname }}', '{{ dg.drive.endpoints }} ({{ dg.drive.type }})', '{{ dg.categories|safe }}', '{{ dg.data|safe }}');
+    {% endfor %}
+
+    {% for bg in bucket_graphs %}
+        bucket_graph('#{{ bg.target }}', '{{ bg.title }}', '{{ bg.categories|safe }}', '{{ bg.data|safe }}');
+    {% endfor %}
 
 });
 </script>
